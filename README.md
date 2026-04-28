@@ -21,11 +21,12 @@ The MVP is focused on a thin but useful path through the system:
 - Define network topologies in YAML or JSON.
 - Compile topologies into deployment plans.
 - Expose the compiler through a small FastAPI control plane.
+- Persist topology definitions in SQLite while the API contract settles.
 - Add OpenStack Nova/Neutron orchestration after the compiler contract is stable.
 - Add a Go-based network test runner after basic provisioning exists.
 - Add Bash scripts for setup, demos, and smoke tests as workflows settle.
 
-No database, UI, or OpenStack provisioning is included yet.
+No UI or OpenStack provisioning is included yet.
 
 ## First Milestone
 
@@ -88,6 +89,50 @@ tests/
 
 ```bash
 make install
+```
+
+## Local Development
+
+Install backend dependencies:
+
+```bash
+make install
+```
+
+Run the backend on port 8010:
+
+```bash
+make run
+```
+
+Stop any local `uvicorn app.main:app` process for this project:
+
+```bash
+make stop
+```
+
+Restart the backend cleanly:
+
+```bash
+make dev
+```
+
+Run tests:
+
+```bash
+make test
+```
+
+If port 8010 is busy, free it:
+
+```bash
+make free-port
+```
+
+Or run the backend on another port:
+
+```bash
+make run-port PORT=8020
 ```
 
 ## Run The API
