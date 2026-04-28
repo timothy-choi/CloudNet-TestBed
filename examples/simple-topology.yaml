@@ -1,0 +1,10 @@
+name: simple-two-node-lab
+nodes:
+  - name: client-a
+    type: host
+  - name: client-b
+    type: host
+links:
+  - from: client-a
+    to: client-b
+    subnet: 10.10.1.0/24
