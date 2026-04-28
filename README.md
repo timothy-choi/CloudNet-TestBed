@@ -91,6 +91,16 @@ tests/
 make install
 ```
 
+## OpenStack Setup
+
+Copy `.env.example` to `.env` and fill in your OpenStack credentials.
+
+```bash
+cp .env.example .env
+```
+
+Set `OPENSTACK_ENABLED=true` when you want the API to sanity-check an OpenStack connection. The current OpenStack support only checks connectivity and lists existing images, flavors, and networks. It does not provision VMs or create networks yet.
+
 ## Local Development
 
 Install backend dependencies:
