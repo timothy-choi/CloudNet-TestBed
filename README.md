@@ -102,6 +102,12 @@ Health check:
 curl http://127.0.0.1:8010/health
 ```
 
+API docs:
+
+```text
+http://127.0.0.1:8010/docs
+```
+
 Compile a topology:
 
 ```bash
@@ -117,6 +123,29 @@ curl -X POST http://127.0.0.1:8010/compile \
       {"from": "client-a", "to": "client-b", "subnet": "10.10.1.0/24"}
     ]
   }'
+```
+
+Store a topology:
+
+```bash
+curl -X POST http://127.0.0.1:8010/topologies \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "simple-two-node-lab",
+    "nodes": [
+      {"name": "client-a", "type": "host"},
+      {"name": "client-b", "type": "host"}
+    ],
+    "links": [
+      {"from": "client-a", "to": "client-b", "subnet": "10.10.1.0/24"}
+    ]
+  }'
+```
+
+List stored topologies:
+
+```bash
+curl http://127.0.0.1:8010/topologies
 ```
 
 ## Run Tests

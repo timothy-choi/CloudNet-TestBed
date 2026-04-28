@@ -1,10 +1,18 @@
 from fastapi import FastAPI, HTTPException
 
+from app.db import create_db_and_tables
+from app.routes.topology import router as topology_router
 from app.schemas import DeploymentPlan, TopologyInput
 from app.topology_compiler import compile_topology
 
 
 app = FastAPI(title="CloudNet Testbed")
+app.include_router(topology_router)
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    create_db_and_tables()
 
 
 @app.get("/health")
