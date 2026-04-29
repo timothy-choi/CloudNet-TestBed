@@ -2,39 +2,31 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.core.config import get_openstack_settings
 from app.services import openstack_client
 
 
 router = APIRouter(prefix="/openstack", tags=["openstack"])
 
 
-def _openstack_error(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=503, detail=str(exc))
+def _disabled_error() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=openstack_client.DISABLED_LIST_DETAIL,
+    )
 
 
 @router.get("/health")
-def openstack_health() -> dict[str, bool]:
-    settings = get_openstack_settings()
-    try:
-        openstack_client.get_openstack_connection()
-    except RuntimeError as exc:
-        raise _openstack_error(exc) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"OpenStack connection failed: {exc}",
-        ) from exc
-
-    return {"enabled": settings.enabled, "connected": True}
+def openstack_health() -> dict[str, Any]:
+    return openstack_client.check_openstack_connection()
 
 
 @router.get("/images")
-def list_images() -> list[dict[str, Any]]:
+def list_images() -> dict[str, list[dict[str, Any]]]:
+    if not openstack_client.is_openstack_enabled():
+        raise _disabled_error()
+
     try:
-        return openstack_client.list_images()
-    except RuntimeError as exc:
-        raise _openstack_error(exc) from exc
+        return {"images": openstack_client.list_images()}
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -43,11 +35,12 @@ def list_images() -> list[dict[str, Any]]:
 
 
 @router.get("/flavors")
-def list_flavors() -> list[dict[str, Any]]:
+def list_flavors() -> dict[str, list[dict[str, Any]]]:
+    if not openstack_client.is_openstack_enabled():
+        raise _disabled_error()
+
     try:
-        return openstack_client.list_flavors()
-    except RuntimeError as exc:
-        raise _openstack_error(exc) from exc
+        return {"flavors": openstack_client.list_flavors()}
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -56,11 +49,12 @@ def list_flavors() -> list[dict[str, Any]]:
 
 
 @router.get("/networks")
-def list_networks() -> list[dict[str, Any]]:
+def list_networks() -> dict[str, list[dict[str, Any]]]:
+    if not openstack_client.is_openstack_enabled():
+        raise _disabled_error()
+
     try:
-        return openstack_client.list_networks()
-    except RuntimeError as exc:
-        raise _openstack_error(exc) from exc
+        return {"networks": openstack_client.list_networks()}
     except Exception as exc:
         raise HTTPException(
             status_code=503,

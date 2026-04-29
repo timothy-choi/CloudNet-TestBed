@@ -1,10 +1,12 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 
-load_dotenv()
+REPO_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(REPO_ROOT / ".env")
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -21,9 +23,9 @@ class OpenStackSettings:
     username: str | None
     password: str | None
     project_name: str | None
-    user_domain_name: str | None
-    project_domain_name: str | None
-    region_name: str | None
+    user_domain_name: str
+    project_domain_name: str
+    region_name: str
 
 
 def get_openstack_settings() -> OpenStackSettings:
@@ -33,7 +35,7 @@ def get_openstack_settings() -> OpenStackSettings:
         username=os.getenv("OS_USERNAME"),
         password=os.getenv("OS_PASSWORD"),
         project_name=os.getenv("OS_PROJECT_NAME"),
-        user_domain_name=os.getenv("OS_USER_DOMAIN_NAME"),
-        project_domain_name=os.getenv("OS_PROJECT_DOMAIN_NAME"),
-        region_name=os.getenv("OS_REGION_NAME"),
+        user_domain_name=os.getenv("OS_USER_DOMAIN_NAME", "Default"),
+        project_domain_name=os.getenv("OS_PROJECT_DOMAIN_NAME", "Default"),
+        region_name=os.getenv("OS_REGION_NAME", "RegionOne"),
     )
