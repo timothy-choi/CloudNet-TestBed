@@ -3,3 +3,6 @@ uvicorn[standard]
 pydantic
 sqlmodel
 pytest
+httpx
+openstacksdk
+python-dotenv
