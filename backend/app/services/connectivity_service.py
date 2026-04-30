@@ -79,7 +79,9 @@ def create_ping_test(
 
     try:
         target_fixed_ip = openstack_client.get_server_fixed_ip(target_server_id)
-        source_floating_ip = _get_or_create_source_floating_ip(source_server_id)
+        source_floating_ip = openstack_client.get_or_create_floating_ip_for_server(
+            source_server_id
+        )
         output = _run_ping_over_ssh(
             source_floating_ip=source_floating_ip,
             target_fixed_ip=target_fixed_ip,
@@ -119,51 +121,24 @@ def _server_resources_by_name(
     }
 
 
-def _get_or_create_source_floating_ip(source_server_id: str) -> str:
-    server = openstack_client.get_server_details(source_server_id)
-    existing_ip = _server_floating_ip(server)
-    if existing_ip:
-        return existing_ip
-
-    floating_ip = openstack_client.create_floating_ip()
-    floating_ip_address = floating_ip.get("floating_ip_address")
-    if not floating_ip_address:
-        raise RuntimeError("OpenStack created a floating IP without an address")
-
-    openstack_client.associate_floating_ip(
-        server_id=source_server_id,
-        floating_ip=floating_ip_address,
-    )
-    return floating_ip_address
-
-
-def _server_floating_ip(server: dict[str, Any]) -> str | None:
-    for addresses in server.get("addresses", {}).values():
-        for address in addresses:
-            if not isinstance(address, dict):
-                continue
-            if address.get("OS-EXT-IPS:type") != "floating":
-                continue
-            ip_address = address.get("addr")
-            if ip_address:
-                return ip_address
-    return None
-
-
 def _run_ping_over_ssh(source_floating_ip: str, target_fixed_ip: str) -> str:
     import paramiko
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect(
-            hostname=source_floating_ip,
-            username=CIRROS_USERNAME,
-            password=CIRROS_PASSWORD,
-            timeout=SSH_TIMEOUT_SECONDS,
-            banner_timeout=SSH_TIMEOUT_SECONDS,
-            auth_timeout=SSH_TIMEOUT_SECONDS,
-        )
+        try:
+            client.connect(
+                hostname=source_floating_ip,
+                username=CIRROS_USERNAME,
+                password=CIRROS_PASSWORD,
+                timeout=SSH_TIMEOUT_SECONDS,
+                banner_timeout=SSH_TIMEOUT_SECONDS,
+                auth_timeout=SSH_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"SSH failed: {exc}") from exc
+
         command = f"ping -c 3 -W {PING_TIMEOUT_SECONDS} {target_fixed_ip}"
         _stdin, stdout, stderr = client.exec_command(
             command,
@@ -176,7 +151,9 @@ def _run_ping_over_ssh(source_floating_ip: str, target_fixed_ip: str) -> str:
             part for part in [output, error_output] if part
         )
         if exit_status != 0:
-            raise RuntimeError(combined_output or f"ping exited with {exit_status}")
+            raise RuntimeError(
+                "ping failed: " + (combined_output or f"exited with {exit_status}")
+            )
         return combined_output
     finally:
         client.close()

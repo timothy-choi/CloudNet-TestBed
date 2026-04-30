@@ -88,18 +88,8 @@ def mock_openstack_for_ping(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         connectivity_service.openstack_client,
-        "get_server_details",
-        lambda server_id: {"addresses": {"private": []}},
-    )
-    monkeypatch.setattr(
-        connectivity_service.openstack_client,
-        "create_floating_ip",
-        lambda: {"floating_ip_address": "172.24.4.101"},
-    )
-    monkeypatch.setattr(
-        connectivity_service.openstack_client,
-        "associate_floating_ip",
-        lambda server_id, floating_ip: {"id": server_id},
+        "get_or_create_floating_ip_for_server",
+        lambda server_id: "172.24.4.101",
     )
 
 
@@ -223,7 +213,7 @@ def test_failed_ssh_creates_failed_test(client: TestClient, monkeypatch) -> None
         "source": "client-a",
         "target": "client-b",
         "status": "FAILED",
-        "output": "ssh timed out",
+        "output": "SSH failed: ssh timed out",
     }
 
 

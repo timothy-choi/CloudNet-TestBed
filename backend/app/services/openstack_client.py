@@ -120,6 +120,16 @@ def _floating_ip_to_dict(floating_ip: Any) -> dict[str, Any]:
     }
 
 
+def _port_to_dict(port: Any) -> dict[str, Any]:
+    return {
+        "id": _resource_value(port, "id"),
+        "name": _resource_value(port, "name"),
+        "device_id": _resource_value(port, "device_id"),
+        "network_id": _resource_value(port, "network_id"),
+        "fixed_ips": _resource_value(port, "fixed_ips", []),
+    }
+
+
 def _network_to_dict(network: Any) -> dict[str, Any]:
     return {
         "id": _resource_value(network, "id"),
@@ -254,7 +264,12 @@ def get_server_console_log(server_id: str, lines: int = 100) -> str:
 
 def get_server_details(server_id: str) -> dict[str, Any]:
     connection = get_openstack_connection()
-    server = connection.compute.get_server(server_id)
+    try:
+        server = connection.compute.get_server(server_id)
+    except Exception as exc:
+        raise RuntimeError(f"server not found: {server_id}") from exc
+    if server is None:
+        raise RuntimeError(f"server not found: {server_id}")
     return _server_to_dict(server)
 
 
@@ -272,19 +287,69 @@ def get_server_status(server_id: str) -> str:
     return str(get_server_details(server_id).get("status", "UNKNOWN"))
 
 
-def create_floating_ip() -> dict[str, Any]:
+def get_server_port(server_id: str) -> dict[str, Any]:
+    connection = get_openstack_connection()
+    get_server_details(server_id)
+    for port in connection.network.ports(device_id=server_id):
+        return _port_to_dict(port)
+
+    raise RuntimeError(f"source port not found for server {server_id}")
+
+
+def get_public_network_id() -> str:
     connection = get_openstack_connection()
     external_network = _get_external_network(connection)
+    return str(external_network["id"])
+
+
+def create_floating_ip(public_network_id: str) -> dict[str, Any]:
+    connection = get_openstack_connection()
     floating_ip = connection.network.create_ip(
-        floating_network_id=external_network["id"],
+        floating_network_id=public_network_id,
     )
     return _floating_ip_to_dict(floating_ip)
 
 
-def associate_floating_ip(server_id: str, floating_ip: str) -> dict[str, Any]:
+def associate_floating_ip_to_port(
+    floating_ip_id: str,
+    port_id: str,
+) -> dict[str, Any]:
     connection = get_openstack_connection()
-    connection.compute.add_floating_ip_to_server(server_id, floating_ip)
-    return get_server_details(server_id)
+    floating_ip = connection.network.update_ip(floating_ip_id, port_id=port_id)
+    return _floating_ip_to_dict(floating_ip)
+
+
+def get_or_create_floating_ip_for_server(server_id: str) -> str:
+    port = get_server_port(server_id)
+    port_id = port.get("id")
+    if not port_id:
+        raise RuntimeError(f"source port not found for server {server_id}")
+
+    connection = get_openstack_connection()
+    for floating_ip in connection.network.ips(port_id=port_id):
+        floating_ip_dict = _floating_ip_to_dict(floating_ip)
+        floating_ip_address = floating_ip_dict.get("floating_ip_address")
+        if floating_ip_address:
+            return str(floating_ip_address)
+
+    public_network_id = get_public_network_id()
+    floating_ip = create_floating_ip(public_network_id)
+    floating_ip_id = floating_ip.get("id")
+    if not floating_ip_id:
+        raise RuntimeError("OpenStack created a floating IP without an id")
+
+    associated_floating_ip = associate_floating_ip_to_port(
+        floating_ip_id=str(floating_ip_id),
+        port_id=str(port_id),
+    )
+    floating_ip_address = associated_floating_ip.get(
+        "floating_ip_address",
+        floating_ip.get("floating_ip_address"),
+    )
+    if not floating_ip_address:
+        raise RuntimeError("OpenStack created a floating IP without an address")
+
+    return str(floating_ip_address)
 
 
 def get_server_fixed_ip(server_id: str, network_name: str | None = None) -> str:
@@ -352,7 +417,7 @@ def _get_external_network(connection: Any) -> dict[str, Any]:
         if network_dict.get("is_router_external"):
             return network_dict
 
-    raise RuntimeError("No external OpenStack network found for floating IPs")
+    raise RuntimeError("public network not found")
 
 
 def _find_security_group(connection: Any, name: str) -> Any | None:
