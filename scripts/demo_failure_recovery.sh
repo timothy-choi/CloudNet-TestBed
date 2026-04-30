@@ -14,17 +14,10 @@ require_command() {
 api_post() {
   local path="$1"
   local body="${2:-{}}"
-  local tmpfile
-
-  tmpfile="$(mktemp)"
-  printf '%s' "${body}" > "${tmpfile}"
-
   curl -sS \
     -X POST "${API_BASE_URL}${path}" \
     -H "Content-Type: application/json" \
-    --data-binary @"${tmpfile}"
-
-  rm -f "${tmpfile}"
+    --data "${body}"
 }
 
 api_get() {
@@ -113,33 +106,26 @@ echo "API: ${API_BASE_URL}"
 
 step "Creating topology"
 
-create_body="$(jq -n \
-  --arg name "${TOPOLOGY_NAME}" \
-  '{
-    name: $name,
-    nodes: [
-      {name: "client-a", type: "host"},
-      {name: "client-b", type: "host"}
-    ],
-    links: [
-      {from: "client-a", to: "client-b", subnet: "10.50.1.0/24"}
-    ]
-  }'
-)"
+tmp_topology="$(mktemp)"
+cat > "${tmp_topology}" <<EOF
+{
+  "name": "${TOPOLOGY_NAME}",
+  "nodes": [
+    {"name": "client-a", "type": "host"},
+    {"name": "client-b", "type": "host"}
+  ],
+  "links": [
+    {"from": "client-a", "to": "client-b", "subnet": "10.50.1.0/24"}
+  ]
+}
+EOF
 
-echo "DEBUG create_body:"
-printf '%s\n' "${create_body}" | jq .
-printf '%s' "${create_body}" | wc -c
+create_response="$(curl -sS -X POST "${API_BASE_URL}/topologies" \
+  -H "Content-Type: application/json" \
+  --data-binary @"${tmp_topology}")"
 
-create_response="$(api_post "/topologies" "${create_body}")"
-ensure_no_api_error "${create_response}" "topology creation"
+rm -f "${tmp_topology}"
 
-topology_id="$(jq -r '.id // empty' <<<"${create_response}")"
-if [[ -z "${topology_id}" || "${topology_id}" == "null" ]]; then
-  echo "Failed to extract topology id" >&2
-  echo "${create_response}" | jq . >&2
-  exit 1
-fi
 echo "Created topology ${topology_id} (${TOPOLOGY_NAME})"
 
 step "Deploying topology"
