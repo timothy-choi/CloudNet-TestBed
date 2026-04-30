@@ -187,6 +187,58 @@ def test_provider_networks_route_wraps_flat_aws_networks(monkeypatch) -> None:
     }
 
 
+def test_provider_networks_post_creates_aws_vpc_and_subnet(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).post(
+        "/provider/networks",
+        json={
+            "name": "cloudnet-test",
+            "cidr": "10.20.0.0/16",
+            "subnet_cidr": "10.20.1.0/24",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "vpc": {
+            "id": "vpc-created",
+            "name": "cloudnet-test",
+            "cidr": "10.20.0.0/16",
+            "state": "available",
+        },
+        "subnet": {
+            "id": "subnet-created",
+            "name": "cloudnet-test-subnet",
+            "cidr": "10.20.1.0/24",
+            "vpc_id": "vpc-created",
+        },
+    }
+    assert fake_aws.created_vpcs == [{"CidrBlock": "10.20.0.0/16"}]
+    assert fake_aws.created_subnets == [
+        {"VpcId": "vpc-created", "CidrBlock": "10.20.1.0/24"}
+    ]
+
+
+def test_provider_networks_post_rejects_subnet_outside_vpc(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).post(
+        "/provider/networks",
+        json={
+            "name": "cloudnet-test",
+            "cidr": "10.20.0.0/16",
+            "subnet_cidr": "10.21.1.0/24",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "subnet_cidr must be inside cidr"}
+
+
 def test_aws_list_images_returns_empty_without_default_ami(monkeypatch) -> None:
     set_aws_env(monkeypatch)
     monkeypatch.delenv("AWS_DEFAULT_AMI_ID", raising=False)
