@@ -6,6 +6,13 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models import Link, Node, Topology
 from app.schemas import TopologyInput
+from app.services.deployment_service import (
+    DeploymentAlreadyExistsError,
+    DeploymentError,
+    deploy_topology,
+    list_topology_resources,
+    serialize_deployment_resource,
+)
 from app.topology_compiler import compile_topology
 
 
@@ -90,6 +97,42 @@ def get_topology(
         raise HTTPException(status_code=404, detail="topology not found")
 
     return serialize_topology(topology)
+
+
+@router.post("/{topology_id}/deploy")
+def deploy_topology_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return deploy_topology(session, topology)
+    except DeploymentAlreadyExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DeploymentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/{topology_id}/resources")
+def get_topology_resources(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    resources = list_topology_resources(session, topology_id)
+    return {
+        "topology_id": topology_id,
+        "resources": [
+            serialize_deployment_resource(resource)
+            for resource in resources
+        ],
+    }
 
 
 @router.delete("/{topology_id}")

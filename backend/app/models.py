@@ -21,6 +21,10 @@ class Topology(SQLModel, table=True):
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+    resources: list["DeploymentResource"] = Relationship(
+        back_populates="topology",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class Node(SQLModel, table=True):
@@ -40,3 +44,14 @@ class Link(SQLModel, table=True):
     subnet: str
 
     topology: Topology | None = Relationship(back_populates="links")
+
+
+class DeploymentResource(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    topology_id: int = Field(foreign_key="topology.id")
+    resource_type: str
+    resource_name: str
+    openstack_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+    topology: Topology | None = Relationship(back_populates="resources")
