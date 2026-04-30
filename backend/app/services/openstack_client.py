@@ -391,7 +391,13 @@ def get_or_create_security_group_allow_ssh_icmp() -> dict[str, Any]:
 
     security_group_id = _resource_value(security_group, "id")
     ensure_security_group_rule(connection, security_group_id, "icmp")
-    ensure_security_group_rule(connection, security_group_id, "tcp", port=22)
+    ensure_security_group_rule(
+        connection,
+        security_group_id,
+        "tcp",
+        port_min=22,
+        port_max=22,
+    )
 
     return {
         "id": security_group_id,
@@ -419,37 +425,137 @@ def ensure_security_group_rule(
     connection: Any,
     sg_id: str,
     protocol: str,
-    port: int | None = None,
-) -> None:
-    for rule in connection.network.security_group_rules(security_group_id=sg_id):
-        if _security_group_rule_matches(rule, protocol, port):
-            logger.info("Rule already exists, skipping")
-            return
+    direction: str = "ingress",
+    port_min: int | None = None,
+    port_max: int | None = None,
+    ethertype: str = "IPv4",
+    remote_ip_prefix: str = "0.0.0.0/0",
+) -> dict[str, Any]:
+    existing_rule = _find_security_group_rule(
+        connection=connection,
+        sg_id=sg_id,
+        protocol=protocol,
+        direction=direction,
+        port_min=port_min,
+        port_max=port_max,
+        ethertype=ethertype,
+        remote_ip_prefix=remote_ip_prefix,
+    )
+    if existing_rule is not None:
+        logger.info("Rule already exists, skipping")
+        return _security_group_rule_to_dict(existing_rule)
 
     rule_data: dict[str, Any] = {
         "security_group_id": sg_id,
-        "direction": "ingress",
-        "ethertype": "IPv4",
+        "direction": direction,
+        "ethertype": ethertype,
         "protocol": protocol,
+        "remote_ip_prefix": remote_ip_prefix,
     }
-    if port is not None:
-        rule_data["port_range_min"] = port
-        rule_data["port_range_max"] = port
+    if port_min is not None:
+        rule_data["port_range_min"] = port_min
+    if port_max is not None:
+        rule_data["port_range_max"] = port_max
 
-    connection.network.create_security_group_rule(**rule_data)
+    try:
+        created_rule = connection.network.create_security_group_rule(**rule_data)
+    except Exception as exc:
+        if not _is_conflict_exception(exc):
+            raise
+
+        existing_rule = _find_security_group_rule(
+            connection=connection,
+            sg_id=sg_id,
+            protocol=protocol,
+            direction=direction,
+            port_min=port_min,
+            port_max=port_max,
+            ethertype=ethertype,
+            remote_ip_prefix=remote_ip_prefix,
+        )
+        if existing_rule is None:
+            raise
+
+        logger.info("Rule already exists, skipping")
+        return _security_group_rule_to_dict(existing_rule)
+
+    return _security_group_rule_to_dict(created_rule)
+
+
+def _find_security_group_rule(
+    connection: Any,
+    sg_id: str,
+    protocol: str,
+    direction: str,
+    port_min: int | None,
+    port_max: int | None,
+    ethertype: str,
+    remote_ip_prefix: str,
+) -> Any | None:
+    for rule in connection.network.security_group_rules(security_group_id=sg_id):
+        if _security_group_rule_matches(
+            rule=rule,
+            protocol=protocol,
+            direction=direction,
+            port_min=port_min,
+            port_max=port_max,
+            ethertype=ethertype,
+            remote_ip_prefix=remote_ip_prefix,
+        ):
+            return rule
+    return None
 
 
 def _security_group_rule_matches(
     rule: Any,
     protocol: str,
-    port: int | None,
+    direction: str,
+    port_min: int | None,
+    port_max: int | None,
+    ethertype: str,
+    remote_ip_prefix: str,
 ) -> bool:
-    if _resource_value(rule, "direction") != "ingress":
+    if _resource_value(rule, "direction") != direction:
         return False
     if _resource_value(rule, "protocol") != protocol:
         return False
+    if _resource_value(rule, "ethertype") != ethertype:
+        return False
     if protocol == "icmp":
         return True
-    if protocol == "tcp" and port is not None:
-        return _resource_value(rule, "port_range_min") == port
-    return port is None
+    if _normalized_remote_ip_prefix(rule) != remote_ip_prefix:
+        return False
+    if port_min is not None and _resource_value(rule, "port_range_min") != port_min:
+        return False
+    if port_max is not None and _resource_value(rule, "port_range_max") != port_max:
+        return False
+    return True
+
+
+def _normalized_remote_ip_prefix(rule: Any) -> str:
+    return _resource_value(rule, "remote_ip_prefix") or "0.0.0.0/0"
+
+
+def _security_group_rule_to_dict(rule: Any) -> dict[str, Any]:
+    return {
+        "id": _resource_value(rule, "id"),
+        "security_group_id": _resource_value(rule, "security_group_id"),
+        "direction": _resource_value(rule, "direction"),
+        "ethertype": _resource_value(rule, "ethertype"),
+        "protocol": _resource_value(rule, "protocol"),
+        "port_range_min": _resource_value(rule, "port_range_min"),
+        "port_range_max": _resource_value(rule, "port_range_max"),
+        "remote_ip_prefix": _resource_value(rule, "remote_ip_prefix"),
+    }
+
+
+def _is_conflict_exception(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    if status_code == 409:
+        return True
+
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) == 409:
+        return True
+
+    return "409" in str(exc) or "Conflict" in exc.__class__.__name__

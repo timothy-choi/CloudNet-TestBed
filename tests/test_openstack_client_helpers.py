@@ -139,15 +139,23 @@ def test_get_or_create_floating_ip_for_server_creates_and_associates(
     assert fake_connection.network.updated_ips == [("fip-new", "port-1")]
 
 
+class FakeConflictException(Exception):
+    status_code = 409
+
+
 class FakeSecurityGroupNetwork:
-    def __init__(self, rules) -> None:
+    def __init__(self, rules, conflict_on_create: bool = False) -> None:
         self.rules = rules
         self.created_rules: list[dict] = []
+        self.conflict_on_create = conflict_on_create
 
     def security_group_rules(self, security_group_id: str):
         return self.rules
 
     def create_security_group_rule(self, **kwargs):
+        if self.conflict_on_create:
+            self.rules.append(SimpleNamespace(id="rule-after-conflict", **kwargs))
+            raise FakeConflictException("409 Conflict: Security group rule exists")
         self.created_rules.append(kwargs)
         return SimpleNamespace(**kwargs)
 
@@ -158,18 +166,23 @@ def test_ensure_security_group_rule_skips_existing_icmp(caplog) -> None:
         network=FakeSecurityGroupNetwork(
             [
                 SimpleNamespace(
+                    id="rule-icmp",
+                    security_group_id="sg-1",
                     direction="ingress",
+                    ethertype="IPv4",
                     protocol="icmp",
                     port_range_min=None,
                     port_range_max=None,
+                    remote_ip_prefix="0.0.0.0/0",
                 )
             ]
         )
     )
 
-    openstack_client.ensure_security_group_rule(connection, "sg-1", "icmp")
+    rule = openstack_client.ensure_security_group_rule(connection, "sg-1", "icmp")
 
     assert connection.network.created_rules == []
+    assert rule["id"] == "rule-icmp"
     assert "Rule already exists, skipping" in caplog.text
 
 
@@ -179,25 +192,42 @@ def test_ensure_security_group_rule_skips_existing_ssh_rule(caplog) -> None:
         network=FakeSecurityGroupNetwork(
             [
                 SimpleNamespace(
+                    id="rule-ssh",
+                    security_group_id="sg-1",
                     direction="ingress",
+                    ethertype="IPv4",
                     protocol="tcp",
                     port_range_min=22,
-                    port_range_max=None,
+                    port_range_max=22,
+                    remote_ip_prefix="0.0.0.0/0",
                 )
             ]
         )
     )
 
-    openstack_client.ensure_security_group_rule(connection, "sg-1", "tcp", port=22)
+    rule = openstack_client.ensure_security_group_rule(
+        connection,
+        "sg-1",
+        "tcp",
+        port_min=22,
+        port_max=22,
+    )
 
     assert connection.network.created_rules == []
+    assert rule["id"] == "rule-ssh"
     assert "Rule already exists, skipping" in caplog.text
 
 
 def test_ensure_security_group_rule_creates_missing_ssh_rule() -> None:
     connection = SimpleNamespace(network=FakeSecurityGroupNetwork([]))
 
-    openstack_client.ensure_security_group_rule(connection, "sg-1", "tcp", port=22)
+    rule = openstack_client.ensure_security_group_rule(
+        connection,
+        "sg-1",
+        "tcp",
+        port_min=22,
+        port_max=22,
+    )
 
     assert connection.network.created_rules == [
         {
@@ -205,7 +235,29 @@ def test_ensure_security_group_rule_creates_missing_ssh_rule() -> None:
             "direction": "ingress",
             "ethertype": "IPv4",
             "protocol": "tcp",
+            "remote_ip_prefix": "0.0.0.0/0",
             "port_range_min": 22,
             "port_range_max": 22,
         }
     ]
+    assert rule["protocol"] == "tcp"
+
+
+def test_ensure_security_group_rule_handles_conflict_by_relisting(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    connection = SimpleNamespace(
+        network=FakeSecurityGroupNetwork([], conflict_on_create=True)
+    )
+
+    rule = openstack_client.ensure_security_group_rule(
+        connection,
+        "sg-1",
+        "tcp",
+        port_min=22,
+        port_max=22,
+    )
+
+    assert connection.network.created_rules == []
+    assert rule["id"] == "rule-after-conflict"
+    assert rule["port_range_min"] == 22
+    assert "Rule already exists, skipping" in caplog.text
