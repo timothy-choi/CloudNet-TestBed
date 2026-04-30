@@ -61,10 +61,8 @@ class AWSSettings:
     region: str | None
     access_key_id: str | None
     secret_access_key: str | None
-    key_name: str | None
     default_ami_id: str | None
     default_instance_type: str
-    ssh_cidr: str
 
 
 def get_openstack_settings() -> OpenStackSettings:
@@ -96,8 +94,6 @@ def get_aws_settings() -> AWSSettings:
         region=os.getenv("AWS_REGION"),
         access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-        key_name=os.getenv("AWS_KEY_NAME"),
         default_ami_id=os.getenv("AWS_DEFAULT_AMI_ID"),
         default_instance_type=os.getenv("AWS_DEFAULT_INSTANCE_TYPE", "t3.micro"),
-        ssh_cidr=os.getenv("AWS_SSH_CIDR", "0.0.0.0/0"),
     )

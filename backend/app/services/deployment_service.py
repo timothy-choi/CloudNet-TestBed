@@ -111,8 +111,6 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
             session.commit()
             session.refresh(subnet_resource)
             created_resources.append(subnet_resource)
-            if provider.name == "aws":
-                network_ids_by_name[network_plan["name"]] = subnet["id"]
 
         for server_plan in plan["servers"]:
             if server_plan["type"] != "host":
