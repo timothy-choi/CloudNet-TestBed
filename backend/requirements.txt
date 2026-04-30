@@ -7,3 +7,5 @@ httpx
 openstacksdk
 paramiko
 python-dotenv
+proxmoxer
+requests

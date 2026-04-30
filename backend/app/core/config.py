@@ -46,6 +46,16 @@ class OpenStackSettings:
     region_name: str
 
 
+@dataclass(frozen=True)
+class ProxmoxSettings:
+    host: str | None
+    port: int
+    user: str | None
+    password: str | None
+    verify_ssl: bool
+    node: str | None
+
+
 def get_openstack_settings() -> OpenStackSettings:
     return OpenStackSettings(
         enabled=_env_bool("OPENSTACK_ENABLED", default=False),
@@ -56,4 +66,15 @@ def get_openstack_settings() -> OpenStackSettings:
         user_domain_name=os.getenv("OS_USER_DOMAIN_NAME", "Default"),
         project_domain_name=os.getenv("OS_PROJECT_DOMAIN_NAME", "Default"),
         region_name=os.getenv("OS_REGION_NAME", "RegionOne"),
+    )
+
+
+def get_proxmox_settings() -> ProxmoxSettings:
+    return ProxmoxSettings(
+        host=os.getenv("PROXMOX_HOST"),
+        port=int(os.getenv("PROXMOX_PORT", "8006")),
+        user=os.getenv("PROXMOX_USER"),
+        password=os.getenv("PROXMOX_PASSWORD"),
+        verify_ssl=_env_bool("PROXMOX_VERIFY_SSL", default=False),
+        node=os.getenv("PROXMOX_NODE"),
     )

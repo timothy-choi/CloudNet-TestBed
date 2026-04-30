@@ -96,7 +96,7 @@ make install
 CloudNet selects infrastructure with `CLOUDNET_PROVIDER`.
 
 - OpenStack: `CLOUDNET_PROVIDER=openstack`
-- Proxmox: planned
+- Proxmox: `CLOUDNET_PROVIDER=proxmox`
 - Mock: `CLOUDNET_PROVIDER=mock`
 
 If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when
@@ -111,6 +111,34 @@ cp .env.example .env
 ```
 
 Set `OPENSTACK_ENABLED=true` when you want the API to sanity-check an OpenStack connection. Existing OpenStack deploy behavior is still available through the OpenStack provider.
+
+## Proxmox Setup
+
+Install Proxmox VE and make sure the backend can reach its API on port `8006`.
+For local development, you can use `root@pam`; for shared environments, create a
+dedicated API user with the minimum permissions needed to inspect nodes, VMs, and
+network configuration.
+
+Set these values in `.env`:
+
+```bash
+CLOUDNET_PROVIDER=proxmox
+PROXMOX_HOST=192.168.1.50
+PROXMOX_PORT=8006
+PROXMOX_USER=root@pam
+PROXMOX_PASSWORD=your-password
+PROXMOX_VERIFY_SSL=false
+PROXMOX_NODE=pve
+```
+
+Then start the backend and check the provider:
+
+```bash
+curl http://localhost:8010/provider/health
+```
+
+Initial Proxmox support is health and list operations only. VM creation is not
+implemented yet.
 
 ## Local Development
 
