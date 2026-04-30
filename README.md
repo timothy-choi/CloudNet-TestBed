@@ -162,6 +162,10 @@ AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
 AWS_DEFAULT_AMI_ID=ami-0123456789abcdef0
 AWS_DEFAULT_INSTANCE_TYPE=t3.micro
+AWS_KEY_NAME=your-ec2-keypair
+AWS_ALLOW_CREATE_INSTANCES=false
+AWS_MAX_INSTANCES_PER_DEPLOY=2
+AWS_SSH_ALLOWED_CIDR=203.0.113.10/32
 ```
 
 Then start the backend and check the provider:
@@ -170,8 +174,19 @@ Then start the backend and check the provider:
 curl http://localhost:8010/provider/health
 ```
 
+### AWS Safety
+
+CloudNet defaults to `t3.micro` and refuses to create EC2 instances unless
+`AWS_ALLOW_CREATE_INSTANCES=true` is set. Keep
+`AWS_MAX_INSTANCES_PER_DEPLOY=2` for demos until you intentionally raise it.
+
+Set `AWS_SSH_ALLOWED_CIDR` to your public IP CIDR if you need SSH access. If it
+is unset, CloudNet does not add a public SSH ingress rule. CloudNet does not
+create NAT Gateways, load balancers, or Elastic IPs.
+
 CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
-default VPCs. Always confirm the VPC ID before cleanup:
+default VPCs. Cleanup is required after demos to terminate CloudNet instances
+and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:
 
 ```bash
 curl -X DELETE http://localhost:8010/provider/networks/{vpc_id}

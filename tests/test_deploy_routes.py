@@ -368,3 +368,117 @@ def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
     ] == [
         {"type": "nova_server", "name": "client-a", "id": "server-client-a"},
     ]
+
+
+def test_aws_deploy_creates_instances_and_aws_resource_types(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    class AWSLikeProvider(MockProvider):
+        name = "aws"
+
+        def max_instances_per_deploy(self) -> int:
+            return 2
+
+    provider = AWSLikeProvider()
+    monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(
+        provider,
+        "create_network",
+        lambda name, cidr=None: {
+            "id": "vpc-1",
+            "name": name,
+            "cidr": cidr,
+            "state": "available",
+        },
+    )
+    monkeypatch.setattr(
+        provider,
+        "create_subnet",
+        lambda network_id, name, cidr: {
+            "id": "subnet-1",
+            "name": name,
+            "cidr": cidr,
+            "vpc_id": network_id,
+        },
+    )
+
+    def create_server(
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": f"i-{name}",
+            "name": name,
+            "status": "pending",
+            "private_ip": f"10.20.1.{10 if name == 'client-a' else 11}",
+            "public_ip": None,
+            "security_group_id": "sg-1",
+        }
+
+    monkeypatch.setattr(provider, "create_server", create_server)
+
+    topology_id = create_topology(client)
+    response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "topology_id": topology_id,
+        "status": "ACTIVE",
+        "resources": [
+            {"type": "aws_vpc", "name": "deploy-test-net-1", "id": "vpc-1"},
+            {
+                "type": "aws_subnet",
+                "name": "deploy-test-net-1-subnet",
+                "id": "subnet-1",
+            },
+            {"type": "aws_security_group", "name": "cloudnet-sg", "id": "sg-1"},
+            {
+                "type": "aws_instance",
+                "name": "client-a",
+                "id": "i-client-a",
+                "private_ip": "10.20.1.10",
+                "public_ip": None,
+            },
+            {
+                "type": "aws_instance",
+                "name": "client-b",
+                "id": "i-client-b",
+                "private_ip": "10.20.1.11",
+                "public_ip": None,
+            },
+        ],
+    }
+
+
+def test_aws_deploy_enforces_max_instances_before_creating_resources(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    class AWSLikeProvider(MockProvider):
+        name = "aws"
+
+        def max_instances_per_deploy(self) -> int:
+            return 1
+
+    provider = AWSLikeProvider()
+    calls: list[str] = []
+    monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(
+        provider,
+        "create_network",
+        lambda name, cidr=None: calls.append("network") or {"id": "vpc-1", "name": name},
+    )
+
+    topology_id = create_topology(client)
+    response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": (
+            "Provider deployment failed: Topology requests 2 AWS instances, "
+            "but AWS_MAX_INSTANCES_PER_DEPLOY is 1"
+        )
+    }
+    assert calls == []

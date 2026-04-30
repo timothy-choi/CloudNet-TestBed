@@ -77,7 +77,12 @@ class MockProvider(BaseProvider):
             "status": "ACTIVE",
         }
 
-    def create_server(self, name: str, network_id: str) -> dict[str, Any]:
+    def create_server(
+        self,
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "id": f"mock-server-{name}",
             "name": name,

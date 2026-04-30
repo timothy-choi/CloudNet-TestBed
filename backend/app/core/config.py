@@ -63,6 +63,10 @@ class AWSSettings:
     secret_access_key: str | None
     default_ami_id: str | None
     default_instance_type: str
+    key_name: str | None
+    allow_create_instances: bool
+    max_instances_per_deploy: int
+    ssh_allowed_cidr: str | None
 
 
 def get_openstack_settings() -> OpenStackSettings:
@@ -96,4 +100,8 @@ def get_aws_settings() -> AWSSettings:
         secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         default_ami_id=os.getenv("AWS_DEFAULT_AMI_ID"),
         default_instance_type=os.getenv("AWS_DEFAULT_INSTANCE_TYPE", "t3.micro"),
+        key_name=os.getenv("AWS_KEY_NAME"),
+        allow_create_instances=_env_bool("AWS_ALLOW_CREATE_INSTANCES", default=False),
+        max_instances_per_deploy=int(os.getenv("AWS_MAX_INSTANCES_PER_DEPLOY", "2")),
+        ssh_allowed_cidr=os.getenv("AWS_SSH_ALLOWED_CIDR"),
     )

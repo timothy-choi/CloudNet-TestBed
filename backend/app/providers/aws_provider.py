@@ -161,8 +161,60 @@ class AWSProvider(BaseProvider):
     ) -> dict[str, Any]:
         self._not_implemented()
 
-    def create_server(self, name: str, network_id: str) -> dict[str, Any]:
-        self._not_implemented()
+    def create_server(
+        self,
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, Any]:
+        settings = self._validated_settings(require_default_ami=True)
+        if not settings.allow_create_instances:
+            raise RuntimeError(
+                "EC2 instance creation disabled. "
+                "Set AWS_ALLOW_CREATE_INSTANCES=true."
+            )
+
+        ec2 = self._client("ec2", settings)
+        try:
+            target_subnet_id = subnet_id or self._first_subnet_id(ec2, network_id)
+            subnet = ec2.describe_subnets(SubnetIds=[target_subnet_id])["Subnets"][0]
+            vpc_id = subnet["VpcId"]
+            security_group_id = self._get_or_create_security_group(
+                ec2=ec2,
+                vpc_id=vpc_id,
+                settings=settings,
+            )
+            params: dict[str, Any] = {
+                "ImageId": settings.default_ami_id,
+                "InstanceType": settings.default_instance_type,
+                "MinCount": 1,
+                "MaxCount": 1,
+                "SubnetId": target_subnet_id,
+                "SecurityGroupIds": [security_group_id],
+                "TagSpecifications": [
+                    {
+                        "ResourceType": "instance",
+                        "Tags": self._resource_tags(name),
+                    }
+                ],
+            }
+            if settings.key_name:
+                params["KeyName"] = settings.key_name
+
+            instance = ec2.run_instances(**params)["Instances"][0]
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance creation failed: {self._error_detail(exc)}"
+            ) from exc
+
+        return {
+            "id": instance.get("InstanceId"),
+            "name": name,
+            "status": instance.get("State", {}).get("Name"),
+            "private_ip": instance.get("PrivateIpAddress"),
+            "public_ip": instance.get("PublicIpAddress"),
+            "security_group_id": security_group_id,
+        }
 
     def stop_server(self, server_id: str) -> dict[str, Any]:
         self._not_implemented()
@@ -193,7 +245,11 @@ class AWSProvider(BaseProvider):
         ec2 = self._client("ec2", settings)
         try:
             vpc = self._get_vpc(ec2, vpc_id)
-            self._validate_vpc_cleanup_allowed(ec2, vpc)
+            self._validate_vpc_cleanup_allowed(vpc)
+            instance_ids = self._cloudnet_instance_ids_for_vpc(ec2, vpc_id)
+            if instance_ids:
+                ec2.terminate_instances(InstanceIds=instance_ids)
+                ec2.get_waiter("instance_terminated").wait(InstanceIds=instance_ids)
             subnets = self._subnets_for_vpc(ec2, vpc_id)
             for subnet in subnets:
                 self._validate_cloudnet_resource(
@@ -208,13 +264,22 @@ class AWSProvider(BaseProvider):
                 self.delete_subnet(subnet_id)
                 deleted_subnets.append(subnet_id)
 
+            deleted_security_groups = self._delete_cloudnet_security_groups(ec2, vpc_id)
             ec2.delete_vpc(VpcId=vpc_id)
         except self._client_error_class() as exc:
             raise RuntimeError(
                 f"AWS VPC deletion failed: {self._error_detail(exc)}"
             ) from exc
 
-        return {"deleted_vpc": vpc_id, "deleted_subnets": deleted_subnets}
+        return {
+            "deleted_vpc": vpc_id,
+            "deleted_subnets": deleted_subnets,
+            "terminated_instances": instance_ids,
+            "deleted_security_groups": deleted_security_groups,
+        }
+
+    def max_instances_per_deploy(self) -> int:
+        return get_aws_settings().max_instances_per_deploy
 
     def _client(self, service_name: str, settings: AWSSettings) -> Any:
         import boto3
@@ -303,7 +368,7 @@ class AWSProvider(BaseProvider):
             Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
         ).get("Subnets", [])
 
-    def _validate_vpc_cleanup_allowed(self, ec2: Any, vpc: dict[str, Any]) -> None:
+    def _validate_vpc_cleanup_allowed(self, vpc: dict[str, Any]) -> None:
         vpc_id = str(vpc.get("VpcId"))
         if vpc.get("IsDefault"):
             raise RuntimeError("Refusing to delete default AWS VPC")
@@ -313,7 +378,6 @@ class AWSProvider(BaseProvider):
             resource_id=vpc_id,
             resource_type="VPC",
         )
-        self._validate_no_instances(ec2, vpc_id)
 
     def _validate_cloudnet_resource(
         self,
@@ -327,7 +391,7 @@ class AWSProvider(BaseProvider):
                 "resource is not tagged as CloudNet-managed"
             )
 
-    def _validate_no_instances(self, ec2: Any, vpc_id: str) -> None:
+    def _instances_for_vpc(self, ec2: Any, vpc_id: str) -> list[dict[str, Any]]:
         reservations = ec2.describe_instances(
             Filters=[
                 {"Name": "vpc-id", "Values": [vpc_id]},
@@ -337,13 +401,114 @@ class AWSProvider(BaseProvider):
                 },
             ]
         ).get("Reservations", [])
-        instances = [
-            instance.get("InstanceId")
+        return [
+            instance
             for reservation in reservations
             for instance in reservation.get("Instances", [])
         ]
-        if instances:
+
+    def _cloudnet_instance_ids_for_vpc(self, ec2: Any, vpc_id: str) -> list[str]:
+        instances = self._instances_for_vpc(ec2, vpc_id)
+        non_cloudnet_instances = [
+            str(instance.get("InstanceId"))
+            for instance in instances
+            if not self._is_cloudnet_resource(instance.get("Tags", []))
+        ]
+        if non_cloudnet_instances:
             raise RuntimeError(
                 "Refusing to delete AWS VPC with non-CloudNet resources: "
-                + ", ".join(str(instance_id) for instance_id in instances)
+                + ", ".join(non_cloudnet_instances)
             )
+        return [str(instance["InstanceId"]) for instance in instances]
+
+    def _first_subnet_id(self, ec2: Any, vpc_id: str) -> str:
+        subnets = self._subnets_for_vpc(ec2, vpc_id)
+        if not subnets:
+            raise RuntimeError(f"No AWS subnet found in VPC {vpc_id}")
+        return str(subnets[0]["SubnetId"])
+
+    def _get_or_create_security_group(
+        self,
+        ec2: Any,
+        vpc_id: str,
+        settings: AWSSettings,
+    ) -> str:
+        group_name = "cloudnet-sg"
+        groups = ec2.describe_security_groups(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {"Name": "group-name", "Values": [group_name]},
+            ]
+        ).get("SecurityGroups", [])
+        if groups:
+            security_group_id = groups[0]["GroupId"]
+        else:
+            security_group_id = ec2.create_security_group(
+                GroupName=group_name,
+                Description="CloudNet TestBed security group",
+                VpcId=vpc_id,
+            )["GroupId"]
+            ec2.create_tags(
+                Resources=[security_group_id],
+                Tags=self._resource_tags(group_name),
+            )
+
+        self._ensure_security_group_rules(
+            ec2=ec2,
+            security_group_id=security_group_id,
+            ssh_allowed_cidr=settings.ssh_allowed_cidr,
+        )
+        return str(security_group_id)
+
+    def _ensure_security_group_rules(
+        self,
+        ec2: Any,
+        security_group_id: str,
+        ssh_allowed_cidr: str | None,
+    ) -> None:
+        permissions = [
+            {
+                "IpProtocol": "icmp",
+                "FromPort": -1,
+                "ToPort": -1,
+                "UserIdGroupPairs": [{"GroupId": security_group_id}],
+            }
+        ]
+        if ssh_allowed_cidr:
+            permissions.append(
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "IpRanges": [{"CidrIp": ssh_allowed_cidr}],
+                }
+            )
+
+        for permission in permissions:
+            try:
+                ec2.authorize_security_group_ingress(
+                    GroupId=security_group_id,
+                    IpPermissions=[permission],
+                )
+            except self._client_error_class() as exc:
+                if "InvalidPermission.Duplicate" not in self._error_detail(exc):
+                    raise
+
+    def _delete_cloudnet_security_groups(self, ec2: Any, vpc_id: str) -> list[str]:
+        groups = ec2.describe_security_groups(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {"Name": "group-name", "Values": ["cloudnet-sg"]},
+            ]
+        ).get("SecurityGroups", [])
+        deleted_security_groups = []
+        for group in groups:
+            group_id = str(group.get("GroupId"))
+            self._validate_cloudnet_resource(
+                tags=group.get("Tags", []),
+                resource_id=group_id,
+                resource_type="security group",
+            )
+            ec2.delete_security_group(GroupId=group_id)
+            deleted_security_groups.append(group_id)
+        return deleted_security_groups

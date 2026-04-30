@@ -45,7 +45,12 @@ class OpenStackProvider(BaseProvider):
     ) -> dict[str, Any]:
         raise NotImplementedError("OpenStack router creation is not implemented yet")
 
-    def create_server(self, name: str, network_id: str) -> dict[str, Any]:
+    def create_server(
+        self,
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, Any]:
         return openstack_client.create_server(name=name, network_id=network_id)
 
     def stop_server(self, server_id: str) -> dict[str, Any]:

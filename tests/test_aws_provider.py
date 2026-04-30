@@ -27,6 +27,12 @@ class FakeAWS:
         self.tags: list[dict] = []
         self.waits: list[dict] = []
         self.instances: list[dict] = []
+        self.run_instances_params: dict | None = None
+        self.ingress_permissions: list[dict] = []
+        self.terminated_instances: list[str] = []
+        self.deleted_security_groups: list[str] = []
+        self.security_groups: list[dict] = []
+        self.operations: list[str] = []
         self.vpcs_by_id: dict[str, dict] = {
             "vpc-created": {
                 "VpcId": "vpc-created",
@@ -113,7 +119,16 @@ class FakeEC2:
             ]
         }
 
-    def describe_subnets(self, Filters=None):
+    def describe_subnets(self, Filters=None, SubnetIds=None):
+        if SubnetIds is not None:
+            return {
+                "Subnets": [
+                    subnet
+                    for subnets in self.fake_aws.subnets_by_vpc.values()
+                    for subnet in subnets
+                    if subnet.get("SubnetId") in SubnetIds
+                ]
+            }
         if Filters:
             vpc_ids = []
             for item in Filters:
@@ -149,12 +164,55 @@ class FakeEC2:
 
     def delete_subnet(self, SubnetId):
         self.fake_aws.deleted_subnets.append(SubnetId)
+        self.fake_aws.operations.append(f"delete_subnet:{SubnetId}")
 
     def delete_vpc(self, VpcId):
         self.fake_aws.deleted_vpcs.append(VpcId)
+        self.fake_aws.operations.append(f"delete_vpc:{VpcId}")
 
     def describe_instances(self, Filters):
         return {"Reservations": [{"Instances": self.fake_aws.instances}]}
+
+    def run_instances(self, **kwargs):
+        self.fake_aws.run_instances_params = kwargs
+        return {
+            "Instances": [
+                {
+                    "InstanceId": "i-created",
+                    "State": {"Name": "pending"},
+                    "PrivateIpAddress": "10.20.1.10",
+                    "PublicIpAddress": None,
+                }
+            ]
+        }
+
+    def terminate_instances(self, InstanceIds):
+        self.fake_aws.terminated_instances.extend(InstanceIds)
+        for instance_id in InstanceIds:
+            self.fake_aws.operations.append(f"terminate_instance:{instance_id}")
+
+    def describe_security_groups(self, Filters):
+        return {"SecurityGroups": self.fake_aws.security_groups}
+
+    def create_security_group(self, GroupName, Description, VpcId):
+        group = {
+            "GroupId": "sg-created",
+            "GroupName": GroupName,
+            "VpcId": VpcId,
+            "Tags": [
+                {"Key": "Name", "Value": GroupName},
+                {"Key": "Project", "Value": "CloudNet"},
+            ],
+        }
+        self.fake_aws.security_groups.append(group)
+        return {"GroupId": group["GroupId"]}
+
+    def authorize_security_group_ingress(self, GroupId, IpPermissions):
+        self.fake_aws.ingress_permissions.extend(IpPermissions)
+
+    def delete_security_group(self, GroupId):
+        self.fake_aws.deleted_security_groups.append(GroupId)
+        self.fake_aws.operations.append(f"delete_security_group:{GroupId}")
 
     def create_tags(self, Resources, Tags):
         self.fake_aws.tags.append({"Resources": Resources, "Tags": Tags})
@@ -395,6 +453,88 @@ def test_aws_create_network_wraps_client_error(monkeypatch) -> None:
         raise AssertionError("AWS ClientError was not wrapped")
 
 
+def test_aws_create_instance_disabled_returns_error(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    monkeypatch.delenv("AWS_ALLOW_CREATE_INSTANCES", raising=False)
+    mock_boto3(monkeypatch)
+
+    try:
+        AWSProvider().create_server("client-a", "vpc-created", "subnet-a")
+    except RuntimeError as exc:
+        assert str(exc) == (
+            "EC2 instance creation disabled. "
+            "Set AWS_ALLOW_CREATE_INSTANCES=true."
+        )
+    else:
+        raise AssertionError("AWS instance creation was not disabled")
+
+
+def test_aws_create_instance_runs_when_enabled(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    monkeypatch.setenv("AWS_ALLOW_CREATE_INSTANCES", "true")
+    monkeypatch.setenv("AWS_KEY_NAME", "cloudnet-key")
+    monkeypatch.setenv("AWS_SSH_ALLOWED_CIDR", "203.0.113.10/32")
+    fake_aws = mock_boto3(monkeypatch)
+
+    server = AWSProvider().create_server("client-a", "vpc-created", "subnet-a")
+
+    assert server == {
+        "id": "i-created",
+        "name": "client-a",
+        "status": "pending",
+        "private_ip": "10.20.1.10",
+        "public_ip": None,
+        "security_group_id": "sg-created",
+    }
+    assert fake_aws.run_instances_params["ImageId"] == "ami-123"
+    assert fake_aws.run_instances_params["InstanceType"] == "t3.micro"
+    assert fake_aws.run_instances_params["SubnetId"] == "subnet-a"
+    assert fake_aws.run_instances_params["SecurityGroupIds"] == ["sg-created"]
+    assert fake_aws.run_instances_params["KeyName"] == "cloudnet-key"
+    assert fake_aws.ingress_permissions == [
+        {
+            "IpProtocol": "icmp",
+            "FromPort": -1,
+            "ToPort": -1,
+            "UserIdGroupPairs": [{"GroupId": "sg-created"}],
+        },
+        {
+            "IpProtocol": "tcp",
+            "FromPort": 22,
+            "ToPort": 22,
+            "IpRanges": [{"CidrIp": "203.0.113.10/32"}],
+        },
+    ]
+
+
+def test_aws_security_group_rules_ignore_duplicates(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    monkeypatch.setenv("AWS_ALLOW_CREATE_INSTANCES", "true")
+
+    class DuplicateRuleEC2(FakeEC2):
+        def authorize_security_group_ingress(self, GroupId, IpPermissions):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidPermission.Duplicate",
+                        "Message": "already exists",
+                    }
+                },
+                "AuthorizeSecurityGroupIngress",
+            )
+
+    fake_aws = FakeAWS()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda service_name, **kwargs: DuplicateRuleEC2(fake_aws)),
+    )
+
+    server = AWSProvider().create_server("client-a", "vpc-created", "subnet-a")
+
+    assert server["id"] == "i-created"
+
+
 def test_provider_networks_delete_removes_subnets_before_vpc(monkeypatch) -> None:
     set_aws_env(monkeypatch)
     fake_aws = mock_boto3(monkeypatch)
@@ -406,6 +546,8 @@ def test_provider_networks_delete_removes_subnets_before_vpc(monkeypatch) -> Non
     assert response.json() == {
         "deleted_vpc": "vpc-created",
         "deleted_subnets": ["subnet-a", "subnet-b"],
+        "terminated_instances": [],
+        "deleted_security_groups": [],
     }
     assert fake_aws.deleted_subnets == ["subnet-a", "subnet-b"]
     assert fake_aws.deleted_vpcs == ["vpc-created"]
@@ -458,12 +600,54 @@ def test_provider_networks_delete_rejects_vpc_with_instances(monkeypatch) -> Non
     assert fake_aws.deleted_vpcs == []
 
 
+def test_provider_networks_delete_terminates_cloudnet_instances(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    fake_aws.instances = [
+        {
+            "InstanceId": "i-cloudnet",
+            "Tags": [{"Key": "Project", "Value": "CloudNet"}],
+        }
+    ]
+    fake_aws.security_groups = [
+        {
+            "GroupId": "sg-created",
+            "GroupName": "cloudnet-sg",
+            "Tags": [{"Key": "Project", "Value": "CloudNet"}],
+        }
+    ]
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).delete("/provider/networks/vpc-created")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "deleted_vpc": "vpc-created",
+        "deleted_subnets": ["subnet-a", "subnet-b"],
+        "terminated_instances": ["i-cloudnet"],
+        "deleted_security_groups": ["sg-created"],
+    }
+    assert fake_aws.terminated_instances == ["i-cloudnet"]
+    assert fake_aws.waits == [
+        {"waiter_name": "instance_terminated", "InstanceIds": ["i-cloudnet"]}
+    ]
+    assert fake_aws.deleted_subnets == ["subnet-a", "subnet-b"]
+    assert fake_aws.deleted_security_groups == ["sg-created"]
+    assert fake_aws.deleted_vpcs == ["vpc-created"]
+    assert fake_aws.operations == [
+        "terminate_instance:i-cloudnet",
+        "delete_subnet:subnet-a",
+        "delete_subnet:subnet-b",
+        "delete_security_group:sg-created",
+        "delete_vpc:vpc-created",
+    ]
+
+
 def test_aws_unimplemented_compute_methods_are_not_implemented() -> None:
     provider = AWSProvider()
 
     for action in [
         lambda: provider.create_router("router-1"),
-        lambda: provider.create_server("client-a", "subnet-1"),
         lambda: provider.stop_server("i-123"),
         lambda: provider.start_server("i-123"),
         lambda: provider.delete_resource("instance", "i-123"),

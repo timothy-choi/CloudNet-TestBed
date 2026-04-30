@@ -47,7 +47,12 @@ class BaseProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_server(self, name: str, network_id: str) -> dict[str, Any]:
+    def create_server(
+        self,
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod

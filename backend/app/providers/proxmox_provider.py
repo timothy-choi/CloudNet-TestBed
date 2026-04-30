@@ -173,7 +173,12 @@ class ProxmoxProvider(BaseProvider):
     ) -> dict[str, Any]:
         self._not_implemented()
 
-    def create_server(self, name: str, network_id: str) -> dict[str, Any]:
+    def create_server(
+        self,
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, Any]:
         self._not_implemented()
 
     def stop_server(self, server_id: str) -> dict[str, Any]:
