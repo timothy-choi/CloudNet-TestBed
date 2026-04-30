@@ -1,0 +1,177 @@
+from collections.abc import Generator
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, SQLModel, create_engine
+
+from app.db import get_session
+from app.main import app
+from app.models import DeploymentResource
+from app.services import failure_service
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> Generator[TestClient, None, None]:
+    database_url = f"sqlite:///{tmp_path / 'test.db'}"
+    engine = create_engine(
+        database_url,
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+
+    def override_get_session() -> Generator[Session, None, None]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def create_topology(client: TestClient) -> int:
+    response = client.post(
+        "/topologies",
+        json={
+            "name": "failure-test",
+            "nodes": [
+                {"name": "client-a", "type": "host"},
+                {"name": "client-b", "type": "host"},
+                {"name": "router-a", "type": "router"},
+            ],
+            "links": [
+                {"from": "client-a", "to": "client-b", "subnet": "10.40.1.0/24"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
+def seed_server_resource(client: TestClient, topology_id: int, node_name: str) -> None:
+    session_override = app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        session.add(
+            DeploymentResource(
+                topology_id=topology_id,
+                resource_type="nova_server",
+                resource_name=node_name,
+                openstack_id=f"server-{node_name}",
+            )
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+
+def test_node_down_calls_stop_server(client: TestClient, monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        failure_service.openstack_client,
+        "stop_server",
+        lambda server_id: calls.append(server_id),
+    )
+    monkeypatch.setattr(
+        failure_service.openstack_client,
+        "get_server_status",
+        lambda server_id: "SHUTOFF",
+    )
+
+    topology_id = create_topology(client)
+    seed_server_resource(client, topology_id, "client-b")
+
+    response = client.post(
+        f"/topologies/{topology_id}/failures/node-down",
+        json={"node": "client-b"},
+    )
+
+    assert response.status_code == 200
+    assert calls == ["server-client-b"]
+    assert response.json()["action"] == "node-down"
+    assert response.json()["status"] == "SUCCESS"
+
+
+def test_recover_calls_start_server(client: TestClient, monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        failure_service.openstack_client,
+        "start_server",
+        lambda server_id: calls.append(server_id),
+    )
+    monkeypatch.setattr(
+        failure_service.openstack_client,
+        "get_server_status",
+        lambda server_id: "ACTIVE",
+    )
+
+    topology_id = create_topology(client)
+    seed_server_resource(client, topology_id, "client-b")
+
+    response = client.post(
+        f"/topologies/{topology_id}/recover/node",
+        json={"node": "client-b"},
+    )
+
+    assert response.status_code == 200
+    assert calls == ["server-client-b"]
+    assert response.json()["action"] == "recover-node"
+    assert response.json()["status"] == "SUCCESS"
+
+
+def test_unknown_topology_returns_404(client: TestClient) -> None:
+    response = client.post(
+        "/topologies/999/failures/node-down",
+        json={"node": "client-b"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "topology not found"}
+
+
+def test_unknown_node_returns_400(client: TestClient) -> None:
+    topology_id = create_topology(client)
+
+    response = client.post(
+        f"/topologies/{topology_id}/failures/node-down",
+        json={"node": "missing-client"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "unknown host node 'missing-client'"}
+
+
+def test_failure_event_is_stored(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(
+        failure_service.openstack_client,
+        "stop_server",
+        lambda server_id: None,
+    )
+    monkeypatch.setattr(
+        failure_service.openstack_client,
+        "get_server_status",
+        lambda server_id: "SHUTOFF",
+    )
+
+    topology_id = create_topology(client)
+    seed_server_resource(client, topology_id, "client-b")
+    failure_response = client.post(
+        f"/topologies/{topology_id}/failures/node-down",
+        json={"node": "client-b"},
+    )
+    assert failure_response.status_code == 200
+
+    response = client.get(f"/topologies/{topology_id}/failures")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["topology_id"] == topology_id
+    assert len(body["failures"]) == 1
+    assert body["failures"][0]["target_type"] == "node"
+    assert body["failures"][0]["target_name"] == "client-b"
+    assert body["failures"][0]["action"] == "node-down"
+    assert body["failures"][0]["status"] == "SUCCESS"

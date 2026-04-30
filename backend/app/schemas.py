@@ -38,3 +38,7 @@ class DeploymentPlan(BaseModel):
 class PingTestRequest(BaseModel):
     source: str
     target: str
+
+
+class NodeFailureRequest(BaseModel):
+    node: str

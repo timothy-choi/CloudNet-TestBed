@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import Link, Node, Topology
-from app.schemas import PingTestRequest, TopologyInput
+from app.schemas import NodeFailureRequest, PingTestRequest, TopologyInput
 from app.services.connectivity_service import (
     ConnectivityTestError,
     connectivity_test_summary,
@@ -19,6 +19,14 @@ from app.services.deployment_service import (
     deploy_topology,
     list_topology_resources,
     serialize_deployment_resource,
+)
+from app.services.failure_service import (
+    FailureError,
+    failure_event_summary,
+    inject_node_down,
+    list_failure_events,
+    recover_node,
+    serialize_failure_event,
 )
 from app.topology_compiler import compile_topology
 
@@ -180,6 +188,69 @@ def get_connectivity_tests(
         "tests": [
             serialize_connectivity_test(test)
             for test in tests
+        ],
+    }
+
+
+@router.post("/{topology_id}/failures/node-down")
+def inject_node_down_endpoint(
+    topology_id: int,
+    failure_request: NodeFailureRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        event = inject_node_down(
+            session=session,
+            topology=topology,
+            node_name=failure_request.node,
+        )
+    except FailureError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return failure_event_summary(event)
+
+
+@router.post("/{topology_id}/recover/node")
+def recover_node_endpoint(
+    topology_id: int,
+    recovery_request: NodeFailureRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        event = recover_node(
+            session=session,
+            topology=topology,
+            node_name=recovery_request.node,
+        )
+    except FailureError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return failure_event_summary(event)
+
+
+@router.get("/{topology_id}/failures")
+def get_failure_events(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    events = list_failure_events(session, topology_id)
+    return {
+        "topology_id": topology_id,
+        "failures": [
+            serialize_failure_event(event)
+            for event in events
         ],
     }
 

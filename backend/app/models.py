@@ -29,6 +29,10 @@ class Topology(SQLModel, table=True):
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+    failure_events: list["FailureEvent"] = Relationship(
+        back_populates="topology",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class Node(SQLModel, table=True):
@@ -72,3 +76,16 @@ class ConnectivityTest(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
     topology: Topology | None = Relationship(back_populates="connectivity_tests")
+
+
+class FailureEvent(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    topology_id: int = Field(foreign_key="topology.id")
+    target_type: str
+    target_name: str
+    action: str
+    status: str
+    output: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+    topology: Topology | None = Relationship(back_populates="failure_events")

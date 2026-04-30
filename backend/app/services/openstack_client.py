@@ -258,6 +258,20 @@ def get_server_details(server_id: str) -> dict[str, Any]:
     return _server_to_dict(server)
 
 
+def stop_server(server_id: str) -> None:
+    connection = get_openstack_connection()
+    connection.compute.stop_server(server_id)
+
+
+def start_server(server_id: str) -> None:
+    connection = get_openstack_connection()
+    connection.compute.start_server(server_id)
+
+
+def get_server_status(server_id: str) -> str:
+    return str(get_server_details(server_id).get("status", "UNKNOWN"))
+
+
 def create_floating_ip() -> dict[str, Any]:
     connection = get_openstack_connection()
     external_network = _get_external_network(connection)
