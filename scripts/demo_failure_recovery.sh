@@ -14,10 +14,13 @@ require_command() {
 api_post() {
   local path="$1"
   local body="${2:-{}}"
-  curl -sS \
+
+  # Send JSON through stdin instead of shell-escaped -d strings.
+  # This avoids malformed JSON when the body contains newlines/quotes.
+  printf '%s' "${body}" | curl -sS \
     -X POST "${API_BASE_URL}${path}" \
     -H "Content-Type: application/json" \
-    -d "${body}"
+    --data-binary @-
 }
 
 api_get() {
@@ -37,6 +40,18 @@ expect_status() {
   actual="$(jq -r '.status // empty' <<<"${response}")"
   if [[ "${actual}" != "${expected}" ]]; then
     echo "Expected status ${expected}, got ${actual}" >&2
+    echo "${response}" | jq . >&2
+    exit 1
+  fi
+}
+
+ensure_no_api_error() {
+  local response="$1"
+  local context="$2"
+  local detail
+  detail="$(jq -r '.detail // empty' <<<"${response}" 2>/dev/null || true)"
+  if [[ -n "${detail}" ]]; then
+    echo "API error during ${context}:" >&2
     echo "${response}" | jq . >&2
     exit 1
   fi
@@ -109,6 +124,7 @@ create_body="$(jq -n \
 )"
 
 create_response="$(api_post "/topologies" "${create_body}")"
+ensure_no_api_error "${create_response}" "topology creation"
 
 topology_id="$(jq -r '.id // empty' <<<"${create_response}")"
 if [[ -z "${topology_id}" || "${topology_id}" == "null" ]]; then
