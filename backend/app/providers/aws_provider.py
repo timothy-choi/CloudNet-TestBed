@@ -59,37 +59,62 @@ class AWSProvider(BaseProvider):
             },
         ]
 
-    def list_networks(self) -> list[dict[str, Any]]:
+    def list_networks(self) -> dict[str, list[dict[str, Any]]]:
         settings = self._validated_settings(require_default_ami=False)
         ec2 = self._client("ec2", settings)
-        vpcs = ec2.describe_vpcs().get("Vpcs", [])
-        subnets = ec2.describe_subnets().get("Subnets", [])
-        networks = [
-            {
-                "id": vpc.get("VpcId"),
-                "cidr": vpc.get("CidrBlock"),
-                "state": vpc.get("State"),
-                "is_default": vpc.get("IsDefault", False),
-            }
-            for vpc in vpcs
-        ]
-        networks.extend(
-            {
-                "id": subnet.get("SubnetId"),
-                "cidr": subnet.get("CidrBlock"),
-                "state": subnet.get("State"),
-                "is_default": bool(subnet.get("DefaultForAz", False)),
-            }
-            for subnet in subnets
-        )
-        return networks
+        try:
+            vpcs = ec2.describe_vpcs().get("Vpcs", [])
+            subnets = ec2.describe_subnets().get("Subnets", [])
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS network listing failed: {self._error_detail(exc)}"
+            ) from exc
+
+        return {
+            "vpcs": [
+                {
+                    "id": vpc.get("VpcId"),
+                    "cidr": vpc.get("CidrBlock"),
+                    "state": vpc.get("State"),
+                    "is_default": vpc.get("IsDefault", False),
+                }
+                for vpc in vpcs
+            ],
+            "subnets": [
+                {
+                    "id": subnet.get("SubnetId"),
+                    "cidr": subnet.get("CidrBlock"),
+                    "state": subnet.get("State"),
+                    "is_default": bool(subnet.get("DefaultForAz", False)),
+                }
+                for subnet in subnets
+            ],
+        }
 
     def create_network(
         self,
         name: str,
         cidr: str | None = None,
     ) -> dict[str, Any]:
-        self._not_implemented()
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        vpc_cidr = cidr or "10.0.0.0/16"
+        try:
+            vpc = ec2.create_vpc(CidrBlock=vpc_cidr)["Vpc"]
+            vpc_id = vpc["VpcId"]
+            ec2.create_tags(Resources=[vpc_id], Tags=[{"Key": "Name", "Value": name}])
+            ec2.get_waiter("vpc_available").wait(VpcIds=[vpc_id])
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS VPC creation failed: {self._error_detail(exc)}"
+            ) from exc
+
+        return {
+            "id": vpc_id,
+            "name": name,
+            "cidr": vpc_cidr,
+            "state": "available",
+        }
 
     def create_subnet(
         self,
@@ -97,7 +122,26 @@ class AWSProvider(BaseProvider):
         name: str,
         cidr: str,
     ) -> dict[str, Any]:
-        self._not_implemented()
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            subnet = ec2.create_subnet(VpcId=network_id, CidrBlock=cidr)["Subnet"]
+            subnet_id = subnet["SubnetId"]
+            ec2.create_tags(
+                Resources=[subnet_id],
+                Tags=[{"Key": "Name", "Value": name}],
+            )
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS subnet creation failed: {self._error_detail(exc)}"
+            ) from exc
+
+        return {
+            "id": subnet_id,
+            "name": name,
+            "cidr": cidr,
+            "vpc_id": network_id,
+        }
 
     def create_router(
         self,
@@ -162,3 +206,17 @@ class AWSProvider(BaseProvider):
 
     def _not_implemented(self) -> NoReturn:
         raise NotImplementedError("AWS provisioning is not implemented yet")
+
+    def _client_error_class(self):
+        from botocore.exceptions import ClientError
+
+        return ClientError
+
+    def _error_detail(self, exc: Exception) -> str:
+        response = getattr(exc, "response", {})
+        error = response.get("Error", {}) if isinstance(response, dict) else {}
+        message = error.get("Message")
+        code = error.get("Code")
+        if code and message:
+            return f"{code}: {message}"
+        return str(exc)

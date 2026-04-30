@@ -1,6 +1,8 @@
 import sys
 from types import SimpleNamespace
 
+from botocore.exceptions import ClientError
+
 from app.providers.aws_provider import AWSProvider
 from app.providers.factory import get_provider
 
@@ -16,6 +18,10 @@ def set_aws_env(monkeypatch) -> None:
 class FakeAWS:
     def __init__(self) -> None:
         self.clients: list[tuple[str, dict]] = []
+        self.created_vpcs: list[dict] = []
+        self.created_subnets: list[dict] = []
+        self.tags: list[dict] = []
+        self.waits: list[dict] = []
 
     def client(self, service_name: str, **kwargs):
         self.clients.append((service_name, kwargs))
@@ -53,6 +59,29 @@ class FakeEC2:
                 }
             ]
         }
+
+    def create_vpc(self, CidrBlock):
+        self.fake_aws.created_vpcs.append({"CidrBlock": CidrBlock})
+        return {"Vpc": {"VpcId": "vpc-created", "CidrBlock": CidrBlock}}
+
+    def create_subnet(self, VpcId, CidrBlock):
+        self.fake_aws.created_subnets.append({"VpcId": VpcId, "CidrBlock": CidrBlock})
+        return {"Subnet": {"SubnetId": "subnet-created", "CidrBlock": CidrBlock}}
+
+    def create_tags(self, Resources, Tags):
+        self.fake_aws.tags.append({"Resources": Resources, "Tags": Tags})
+
+    def get_waiter(self, waiter_name: str):
+        return FakeWaiter(self.fake_aws, waiter_name)
+
+
+class FakeWaiter:
+    def __init__(self, fake_aws: FakeAWS, waiter_name: str) -> None:
+        self.fake_aws = fake_aws
+        self.waiter_name = waiter_name
+
+    def wait(self, **kwargs) -> None:
+        self.fake_aws.waits.append({"waiter_name": self.waiter_name, **kwargs})
 
 
 def mock_boto3(monkeypatch) -> FakeAWS:
@@ -102,20 +131,24 @@ def test_aws_lists_images_and_networks(monkeypatch) -> None:
     assert provider.list_images() == [
         {"id": "ami-123", "name": "ami-123", "status": "configured"}
     ]
-    assert provider.list_networks() == [
-        {
-            "id": "vpc-1",
-            "cidr": "10.0.0.0/16",
-            "state": "available",
-            "is_default": True,
-        },
-        {
-            "id": "subnet-1",
-            "cidr": "10.0.1.0/24",
-            "state": "available",
-            "is_default": True,
-        },
-    ]
+    assert provider.list_networks() == {
+        "vpcs": [
+            {
+                "id": "vpc-1",
+                "cidr": "10.0.0.0/16",
+                "state": "available",
+                "is_default": True,
+            },
+        ],
+        "subnets": [
+            {
+                "id": "subnet-1",
+                "cidr": "10.0.1.0/24",
+                "state": "available",
+                "is_default": True,
+            },
+        ],
+    }
 
 
 def test_aws_list_images_returns_empty_without_default_ami(monkeypatch) -> None:
@@ -125,12 +158,67 @@ def test_aws_list_images_returns_empty_without_default_ami(monkeypatch) -> None:
     assert AWSProvider().list_images() == []
 
 
-def test_aws_provisioning_methods_are_not_implemented() -> None:
+def test_aws_creates_vpc_and_subnet(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    provider = AWSProvider()
+
+    assert provider.create_network("cloudnet-net", None) == {
+        "id": "vpc-created",
+        "name": "cloudnet-net",
+        "cidr": "10.0.0.0/16",
+        "state": "available",
+    }
+    assert provider.create_subnet("vpc-created", "cloudnet-subnet", "10.0.1.0/24") == {
+        "id": "subnet-created",
+        "name": "cloudnet-subnet",
+        "cidr": "10.0.1.0/24",
+        "vpc_id": "vpc-created",
+    }
+    assert fake_aws.created_vpcs == [{"CidrBlock": "10.0.0.0/16"}]
+    assert fake_aws.created_subnets == [
+        {"VpcId": "vpc-created", "CidrBlock": "10.0.1.0/24"}
+    ]
+    assert fake_aws.tags == [
+        {
+            "Resources": ["vpc-created"],
+            "Tags": [{"Key": "Name", "Value": "cloudnet-net"}],
+        },
+        {
+            "Resources": ["subnet-created"],
+            "Tags": [{"Key": "Name", "Value": "cloudnet-subnet"}],
+        },
+    ]
+    assert fake_aws.waits == [
+        {"waiter_name": "vpc_available", "VpcIds": ["vpc-created"]}
+    ]
+
+
+def test_aws_create_network_wraps_client_error(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+
+    class FailingEC2:
+        def create_vpc(self, CidrBlock):
+            raise ClientError(
+                {"Error": {"Code": "AuthFailure", "Message": "not allowed"}},
+                "CreateVpc",
+            )
+
+    provider = AWSProvider()
+    monkeypatch.setattr(provider, "_client", lambda service_name, settings: FailingEC2())
+
+    try:
+        provider.create_network("cloudnet-net", "10.0.0.0/16")
+    except RuntimeError as exc:
+        assert str(exc) == "AWS VPC creation failed: AuthFailure: not allowed"
+    else:
+        raise AssertionError("AWS ClientError was not wrapped")
+
+
+def test_aws_unimplemented_compute_methods_are_not_implemented() -> None:
     provider = AWSProvider()
 
     for action in [
-        lambda: provider.create_network("cloudnet-net", "10.0.0.0/16"),
-        lambda: provider.create_subnet("vpc-1", "cloudnet-subnet", "10.0.1.0/24"),
         lambda: provider.create_router("router-1"),
         lambda: provider.create_server("client-a", "subnet-1"),
         lambda: provider.stop_server("i-123"),
