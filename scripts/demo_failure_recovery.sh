@@ -126,7 +126,7 @@ create_response="$(curl -sS -X POST "${API_BASE_URL}/topologies" \
 
 rm -f "${tmp_topology}"
 
-echo "Created topology ${topology_id} (${TOPOLOGY_NAME})"
+echo "Created topology"
 
 step "Deploying topology"
 deploy_response="$(api_post "/topologies/${topology_id}/deploy")"
