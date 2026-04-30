@@ -33,3 +33,8 @@ class DeploymentPlan(BaseModel):
     topology_name: str
     networks: list[DeploymentNetwork]
     servers: list[DeploymentServer]
+
+
+class PingTestRequest(BaseModel):
+    source: str
+    target: str

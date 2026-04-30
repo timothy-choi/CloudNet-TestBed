@@ -25,6 +25,10 @@ class Topology(SQLModel, table=True):
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+    connectivity_tests: list["ConnectivityTest"] = Relationship(
+        back_populates="topology",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class Node(SQLModel, table=True):
@@ -55,3 +59,16 @@ class DeploymentResource(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
     topology: Topology | None = Relationship(back_populates="resources")
+
+
+class ConnectivityTest(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    topology_id: int = Field(foreign_key="topology.id")
+    source_node: str
+    target_node: str
+    test_type: str = "ping"
+    status: str = "PENDING"
+    output: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+    topology: Topology | None = Relationship(back_populates="connectivity_tests")

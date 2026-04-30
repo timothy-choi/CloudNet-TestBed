@@ -5,7 +5,14 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import Link, Node, Topology
-from app.schemas import TopologyInput
+from app.schemas import PingTestRequest, TopologyInput
+from app.services.connectivity_service import (
+    ConnectivityTestError,
+    connectivity_test_summary,
+    create_ping_test,
+    list_connectivity_tests,
+    serialize_connectivity_test,
+)
 from app.services.deployment_service import (
     DeploymentAlreadyExistsError,
     DeploymentError,
@@ -131,6 +138,48 @@ def get_topology_resources(
         "resources": [
             serialize_deployment_resource(resource)
             for resource in resources
+        ],
+    }
+
+
+@router.post("/{topology_id}/tests/ping")
+def create_ping_test_endpoint(
+    topology_id: int,
+    ping_request: PingTestRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        test = create_ping_test(
+            session=session,
+            topology=topology,
+            source=ping_request.source,
+            target=ping_request.target,
+        )
+    except ConnectivityTestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return connectivity_test_summary(test)
+
+
+@router.get("/{topology_id}/tests")
+def get_connectivity_tests(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    tests = list_connectivity_tests(session, topology_id)
+    return {
+        "topology_id": topology_id,
+        "tests": [
+            serialize_connectivity_test(test)
+            for test in tests
         ],
     }
 

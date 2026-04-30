@@ -5,4 +5,5 @@ sqlmodel
 pytest
 httpx
 openstacksdk
+paramiko
 python-dotenv
