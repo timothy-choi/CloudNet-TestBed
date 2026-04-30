@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -136,3 +137,75 @@ def test_get_or_create_floating_ip_for_server_creates_and_associates(
     assert floating_ip == "172.24.4.101"
     assert fake_connection.network.created_ips == ["public-net"]
     assert fake_connection.network.updated_ips == [("fip-new", "port-1")]
+
+
+class FakeSecurityGroupNetwork:
+    def __init__(self, rules) -> None:
+        self.rules = rules
+        self.created_rules: list[dict] = []
+
+    def security_group_rules(self, security_group_id: str):
+        return self.rules
+
+    def create_security_group_rule(self, **kwargs):
+        self.created_rules.append(kwargs)
+        return SimpleNamespace(**kwargs)
+
+
+def test_ensure_security_group_rule_skips_existing_icmp(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    connection = SimpleNamespace(
+        network=FakeSecurityGroupNetwork(
+            [
+                SimpleNamespace(
+                    direction="ingress",
+                    protocol="icmp",
+                    port_range_min=None,
+                    port_range_max=None,
+                )
+            ]
+        )
+    )
+
+    openstack_client.ensure_security_group_rule(connection, "sg-1", "icmp")
+
+    assert connection.network.created_rules == []
+    assert "Rule already exists, skipping" in caplog.text
+
+
+def test_ensure_security_group_rule_skips_existing_ssh_rule(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    connection = SimpleNamespace(
+        network=FakeSecurityGroupNetwork(
+            [
+                SimpleNamespace(
+                    direction="ingress",
+                    protocol="tcp",
+                    port_range_min=22,
+                    port_range_max=None,
+                )
+            ]
+        )
+    )
+
+    openstack_client.ensure_security_group_rule(connection, "sg-1", "tcp", port=22)
+
+    assert connection.network.created_rules == []
+    assert "Rule already exists, skipping" in caplog.text
+
+
+def test_ensure_security_group_rule_creates_missing_ssh_rule() -> None:
+    connection = SimpleNamespace(network=FakeSecurityGroupNetwork([]))
+
+    openstack_client.ensure_security_group_rule(connection, "sg-1", "tcp", port=22)
+
+    assert connection.network.created_rules == [
+        {
+            "security_group_id": "sg-1",
+            "direction": "ingress",
+            "ethertype": "IPv4",
+            "protocol": "tcp",
+            "port_range_min": 22,
+            "port_range_max": 22,
+        }
+    ]

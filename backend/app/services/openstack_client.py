@@ -1,8 +1,10 @@
+import logging
 from typing import Any
 
 from app.core.config import OpenStackSettings, get_openstack_settings
 
 
+logger = logging.getLogger(__name__)
 DISABLED_DETAIL = "OpenStack is disabled"
 DISABLED_LIST_DETAIL = "OpenStack is disabled. Set OPENSTACK_ENABLED=true to enable it."
 REQUIRED_SETTINGS = {
@@ -388,22 +390,8 @@ def get_or_create_security_group_allow_ssh_icmp() -> dict[str, Any]:
         )
 
     security_group_id = _resource_value(security_group, "id")
-    _ensure_security_group_rule(
-        connection=connection,
-        security_group_id=security_group_id,
-        direction="ingress",
-        ethertype="IPv4",
-        protocol="tcp",
-        port_range_min=22,
-        port_range_max=22,
-    )
-    _ensure_security_group_rule(
-        connection=connection,
-        security_group_id=security_group_id,
-        direction="ingress",
-        ethertype="IPv4",
-        protocol="icmp",
-    )
+    ensure_security_group_rule(connection, security_group_id, "icmp")
+    ensure_security_group_rule(connection, security_group_id, "tcp", port=22)
 
     return {
         "id": security_group_id,
@@ -427,32 +415,41 @@ def _find_security_group(connection: Any, name: str) -> Any | None:
     return None
 
 
-def _ensure_security_group_rule(
+def ensure_security_group_rule(
     connection: Any,
-    security_group_id: str,
-    direction: str,
-    ethertype: str,
+    sg_id: str,
     protocol: str,
-    port_range_min: int | None = None,
-    port_range_max: int | None = None,
+    port: int | None = None,
 ) -> None:
-    for rule in connection.network.security_group_rules(
-        security_group_id=security_group_id
-    ):
-        if (
-            _resource_value(rule, "direction") == direction
-            and _resource_value(rule, "ethertype") == ethertype
-            and _resource_value(rule, "protocol") == protocol
-            and _resource_value(rule, "port_range_min") == port_range_min
-            and _resource_value(rule, "port_range_max") == port_range_max
-        ):
+    for rule in connection.network.security_group_rules(security_group_id=sg_id):
+        if _security_group_rule_matches(rule, protocol, port):
+            logger.info("Rule already exists, skipping")
             return
 
-    connection.network.create_security_group_rule(
-        security_group_id=security_group_id,
-        direction=direction,
-        ethertype=ethertype,
-        protocol=protocol,
-        port_range_min=port_range_min,
-        port_range_max=port_range_max,
-    )
+    rule_data: dict[str, Any] = {
+        "security_group_id": sg_id,
+        "direction": "ingress",
+        "ethertype": "IPv4",
+        "protocol": protocol,
+    }
+    if port is not None:
+        rule_data["port_range_min"] = port
+        rule_data["port_range_max"] = port
+
+    connection.network.create_security_group_rule(**rule_data)
+
+
+def _security_group_rule_matches(
+    rule: Any,
+    protocol: str,
+    port: int | None,
+) -> bool:
+    if _resource_value(rule, "direction") != "ingress":
+        return False
+    if _resource_value(rule, "protocol") != protocol:
+        return False
+    if protocol == "icmp":
+        return True
+    if protocol == "tcp" and port is not None:
+        return _resource_value(rule, "port_range_min") == port
+    return port is None
