@@ -93,16 +93,23 @@ echo "CloudNet failure recovery demo"
 echo "API: ${API_BASE_URL}"
 
 step "Creating topology"
-create_response="$(api_post "/topologies" "{
-  \"name\": \"${TOPOLOGY_NAME}\",
-  \"nodes\": [
-    {\"name\": \"client-a\", \"type\": \"host\"},
-    {\"name\": \"client-b\", \"type\": \"host\"}
-  ],
-  \"links\": [
-    {\"from_node\": \"client-a\", \"to_node\": \"client-b\", \"subnet\": \"10.50.1.0/24\"}
-  ]
-}")"
+
+create_body="$(jq -n \
+  --arg name "${TOPOLOGY_NAME}" \
+  '{
+    name: $name,
+    nodes: [
+      {name: "client-a", type: "host"},
+      {name: "client-b", type: "host"}
+    ],
+    links: [
+      {from_node: "client-a", to_node: "client-b", subnet: "10.50.1.0/24"}
+    ]
+  }'
+)"
+
+create_response="$(api_post "/topologies" "${create_body}")"
+
 topology_id="$(jq -r '.id // empty' <<<"${create_response}")"
 if [[ -z "${topology_id}" || "${topology_id}" == "null" ]]; then
   echo "Failed to extract topology id" >&2
