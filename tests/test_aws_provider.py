@@ -22,8 +22,63 @@ class FakeAWS:
         self.clients: list[tuple[str, dict]] = []
         self.created_vpcs: list[dict] = []
         self.created_subnets: list[dict] = []
+        self.deleted_subnets: list[str] = []
+        self.deleted_vpcs: list[str] = []
         self.tags: list[dict] = []
         self.waits: list[dict] = []
+        self.instances: list[dict] = []
+        self.vpcs_by_id: dict[str, dict] = {
+            "vpc-created": {
+                "VpcId": "vpc-created",
+                "CidrBlock": "10.20.0.0/16",
+                "State": "available",
+                "IsDefault": False,
+                "Tags": [
+                    {"Key": "Name", "Value": "cloudnet-test"},
+                    {"Key": "Project", "Value": "CloudNet"},
+                    {"Key": "ManagedBy", "Value": "CloudNet"},
+                ],
+            },
+            "vpc-default": {
+                "VpcId": "vpc-default",
+                "CidrBlock": "172.31.0.0/16",
+                "State": "available",
+                "IsDefault": True,
+                "Tags": [{"Key": "Name", "Value": "default"}],
+            },
+            "vpc-untagged": {
+                "VpcId": "vpc-untagged",
+                "CidrBlock": "10.30.0.0/16",
+                "State": "available",
+                "IsDefault": False,
+                "Tags": [{"Key": "Name", "Value": "prod"}],
+            },
+        }
+        self.subnets_by_vpc: dict[str, list[dict]] = {
+            "vpc-created": [
+                {
+                    "SubnetId": "subnet-a",
+                    "VpcId": "vpc-created",
+                    "CidrBlock": "10.20.1.0/24",
+                    "State": "available",
+                    "DefaultForAz": False,
+                    "Tags": [
+                        {"Key": "Name", "Value": "cloudnet-test-subnet-a"},
+                        {"Key": "Project", "Value": "CloudNet"},
+                    ],
+                },
+                {
+                    "SubnetId": "subnet-b",
+                    "VpcId": "vpc-created",
+                    "CidrBlock": "10.20.2.0/24",
+                    "State": "available",
+                    "DefaultForAz": False,
+                    "Tags": [{"Key": "Name", "Value": "cloudnet-test-subnet-b"}],
+                },
+            ],
+            "vpc-default": [],
+            "vpc-untagged": [],
+        }
 
     def client(self, service_name: str, **kwargs):
         self.clients.append((service_name, kwargs))
@@ -37,7 +92,15 @@ class FakeEC2:
     def describe_availability_zones(self):
         return {"AvailabilityZones": [{"ZoneName": "us-west-2a"}]}
 
-    def describe_vpcs(self):
+    def describe_vpcs(self, VpcIds=None):
+        if VpcIds is not None:
+            return {
+                "Vpcs": [
+                    self.fake_aws.vpcs_by_id[vpc_id]
+                    for vpc_id in VpcIds
+                    if vpc_id in self.fake_aws.vpcs_by_id
+                ]
+            }
         return {
             "Vpcs": [
                 {
@@ -50,7 +113,19 @@ class FakeEC2:
             ]
         }
 
-    def describe_subnets(self):
+    def describe_subnets(self, Filters=None):
+        if Filters:
+            vpc_ids = []
+            for item in Filters:
+                if item.get("Name") == "vpc-id":
+                    vpc_ids.extend(item.get("Values", []))
+            return {
+                "Subnets": [
+                    subnet
+                    for vpc_id in vpc_ids
+                    for subnet in self.fake_aws.subnets_by_vpc.get(vpc_id, [])
+                ]
+            }
         return {
             "Subnets": [
                 {
@@ -71,6 +146,15 @@ class FakeEC2:
     def create_subnet(self, VpcId, CidrBlock):
         self.fake_aws.created_subnets.append({"VpcId": VpcId, "CidrBlock": CidrBlock})
         return {"Subnet": {"SubnetId": "subnet-created", "CidrBlock": CidrBlock}}
+
+    def delete_subnet(self, SubnetId):
+        self.fake_aws.deleted_subnets.append(SubnetId)
+
+    def delete_vpc(self, VpcId):
+        self.fake_aws.deleted_vpcs.append(VpcId)
+
+    def describe_instances(self, Filters):
+        return {"Reservations": [{"Instances": self.fake_aws.instances}]}
 
     def create_tags(self, Resources, Tags):
         self.fake_aws.tags.append({"Resources": Resources, "Tags": Tags})
@@ -270,11 +354,19 @@ def test_aws_creates_vpc_and_subnet(monkeypatch) -> None:
     assert fake_aws.tags == [
         {
             "Resources": ["vpc-created"],
-            "Tags": [{"Key": "Name", "Value": "cloudnet-net"}],
+            "Tags": [
+                {"Key": "Name", "Value": "cloudnet-net"},
+                {"Key": "Project", "Value": "CloudNet"},
+                {"Key": "ManagedBy", "Value": "CloudNet"},
+            ],
         },
         {
             "Resources": ["subnet-created"],
-            "Tags": [{"Key": "Name", "Value": "cloudnet-subnet"}],
+            "Tags": [
+                {"Key": "Name", "Value": "cloudnet-subnet"},
+                {"Key": "Project", "Value": "CloudNet"},
+                {"Key": "ManagedBy", "Value": "CloudNet"},
+            ],
         },
     ]
     assert fake_aws.waits == [
@@ -301,6 +393,69 @@ def test_aws_create_network_wraps_client_error(monkeypatch) -> None:
         assert str(exc) == "AWS VPC creation failed: AuthFailure: not allowed"
     else:
         raise AssertionError("AWS ClientError was not wrapped")
+
+
+def test_provider_networks_delete_removes_subnets_before_vpc(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).delete("/provider/networks/vpc-created")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "deleted_vpc": "vpc-created",
+        "deleted_subnets": ["subnet-a", "subnet-b"],
+    }
+    assert fake_aws.deleted_subnets == ["subnet-a", "subnet-b"]
+    assert fake_aws.deleted_vpcs == ["vpc-created"]
+
+
+def test_provider_networks_delete_rejects_default_vpc(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).delete("/provider/networks/vpc-default")
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Refusing to delete default AWS VPC"}
+    assert fake_aws.deleted_subnets == []
+    assert fake_aws.deleted_vpcs == []
+
+
+def test_provider_networks_delete_rejects_untagged_vpc(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).delete("/provider/networks/vpc-untagged")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": (
+            "Refusing to delete VPC vpc-untagged: "
+            "resource is not tagged as CloudNet-managed"
+        )
+    }
+    assert fake_aws.deleted_subnets == []
+    assert fake_aws.deleted_vpcs == []
+
+
+def test_provider_networks_delete_rejects_vpc_with_instances(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    fake_aws.instances = [{"InstanceId": "i-prod"}]
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).delete("/provider/networks/vpc-created")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "Refusing to delete AWS VPC with non-CloudNet resources: i-prod"
+    }
+    assert fake_aws.deleted_subnets == []
+    assert fake_aws.deleted_vpcs == []
 
 
 def test_aws_unimplemented_compute_methods_are_not_implemented() -> None:

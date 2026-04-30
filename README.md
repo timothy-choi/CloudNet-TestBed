@@ -145,7 +145,8 @@ implemented yet.
 
 AWS is the practical real-infrastructure provider for the MVP. Start with
 health and list operations before provisioning resources. The current AWS
-provider does not create VPCs, EC2 instances, or NAT Gateways yet.
+provider can create and delete tagged VPC/subnet pairs, but it does not create
+EC2 instances or NAT Gateways yet.
 
 Costs can start as soon as AWS resources are created outside CloudNet. Use a
 low-cost region and instance type, keep experiments small, and clean up
@@ -167,6 +168,13 @@ Then start the backend and check the provider:
 
 ```bash
 curl http://localhost:8010/provider/health
+```
+
+CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
+default VPCs. Always confirm the VPC ID before cleanup:
+
+```bash
+curl -X DELETE http://localhost:8010/provider/networks/{vpc_id}
 ```
 
 ## Local Development

@@ -86,6 +86,21 @@ def create_network(request: CreateAWSNetworkRequest) -> dict[str, dict[str, Any]
     return {"vpc": vpc, "subnet": subnet}
 
 
+@router.delete("/networks/{vpc_id}")
+def delete_network(vpc_id: str) -> dict[str, Any]:
+    provider = get_provider()
+    if not isinstance(provider, AWSProvider):
+        raise HTTPException(
+            status_code=400,
+            detail="Network deletion is currently supported only for AWS provider",
+        )
+
+    try:
+        return provider.delete_network(vpc_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _parse_network(value: str, field_name: str) -> ipaddress.IPv4Network:
     try:
         network = ipaddress.ip_network(value)

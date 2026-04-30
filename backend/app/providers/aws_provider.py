@@ -6,6 +6,10 @@ from app.providers.base import BaseProvider
 
 class AWSProvider(BaseProvider):
     name = "aws"
+    cloudnet_tags = [
+        {"Key": "Project", "Value": "CloudNet"},
+        {"Key": "ManagedBy", "Value": "CloudNet"},
+    ]
 
     def health(self) -> dict[str, Any]:
         settings = get_aws_settings()
@@ -106,7 +110,10 @@ class AWSProvider(BaseProvider):
         try:
             vpc = ec2.create_vpc(CidrBlock=vpc_cidr)["Vpc"]
             vpc_id = vpc["VpcId"]
-            ec2.create_tags(Resources=[vpc_id], Tags=[{"Key": "Name", "Value": name}])
+            ec2.create_tags(
+                Resources=[vpc_id],
+                Tags=self._resource_tags(name),
+            )
             ec2.get_waiter("vpc_available").wait(VpcIds=[vpc_id])
         except self._client_error_class() as exc:
             raise RuntimeError(
@@ -133,7 +140,7 @@ class AWSProvider(BaseProvider):
             subnet_id = subnet["SubnetId"]
             ec2.create_tags(
                 Resources=[subnet_id],
-                Tags=[{"Key": "Name", "Value": name}],
+                Tags=self._resource_tags(name),
             )
         except self._client_error_class() as exc:
             raise RuntimeError(
@@ -169,6 +176,45 @@ class AWSProvider(BaseProvider):
         resource_id: str,
     ) -> dict[str, Any]:
         self._not_implemented()
+
+    def delete_subnet(self, subnet_id: str) -> dict[str, Any]:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            ec2.delete_subnet(SubnetId=subnet_id)
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS subnet deletion failed: {self._error_detail(exc)}"
+            ) from exc
+        return {"id": subnet_id, "deleted": True}
+
+    def delete_network(self, vpc_id: str) -> dict[str, Any]:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            vpc = self._get_vpc(ec2, vpc_id)
+            self._validate_vpc_cleanup_allowed(ec2, vpc)
+            subnets = self._subnets_for_vpc(ec2, vpc_id)
+            for subnet in subnets:
+                self._validate_cloudnet_resource(
+                    tags=subnet.get("Tags", []),
+                    resource_id=str(subnet.get("SubnetId")),
+                    resource_type="subnet",
+                )
+
+            deleted_subnets = []
+            for subnet in subnets:
+                subnet_id = str(subnet["SubnetId"])
+                self.delete_subnet(subnet_id)
+                deleted_subnets.append(subnet_id)
+
+            ec2.delete_vpc(VpcId=vpc_id)
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS VPC deletion failed: {self._error_detail(exc)}"
+            ) from exc
+
+        return {"deleted_vpc": vpc_id, "deleted_subnets": deleted_subnets}
 
     def _client(self, service_name: str, settings: AWSSettings) -> Any:
         import boto3
@@ -211,6 +257,9 @@ class AWSProvider(BaseProvider):
     def _not_implemented(self) -> NoReturn:
         raise NotImplementedError("AWS provisioning is not implemented yet")
 
+    def _resource_tags(self, name: str) -> list[dict[str, str]]:
+        return [{"Key": "Name", "Value": name}, *self.cloudnet_tags]
+
     def _client_error_class(self):
         from botocore.exceptions import ClientError
 
@@ -230,3 +279,71 @@ class AWSProvider(BaseProvider):
             if tag.get("Key") == "Name":
                 return tag.get("Value", "")
         return ""
+
+    def _tag_value(self, tags: list[dict[str, str]], key: str) -> str:
+        for tag in tags:
+            if tag.get("Key") == key:
+                return tag.get("Value", "")
+        return ""
+
+    def _is_cloudnet_resource(self, tags: list[dict[str, str]]) -> bool:
+        return (
+            self._tag_value(tags, "Project") == "CloudNet"
+            or self._tag_name(tags).startswith("cloudnet-")
+        )
+
+    def _get_vpc(self, ec2: Any, vpc_id: str) -> dict[str, Any]:
+        vpcs = ec2.describe_vpcs(VpcIds=[vpc_id]).get("Vpcs", [])
+        if not vpcs:
+            raise RuntimeError(f"AWS VPC not found: {vpc_id}")
+        return vpcs[0]
+
+    def _subnets_for_vpc(self, ec2: Any, vpc_id: str) -> list[dict[str, Any]]:
+        return ec2.describe_subnets(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+        ).get("Subnets", [])
+
+    def _validate_vpc_cleanup_allowed(self, ec2: Any, vpc: dict[str, Any]) -> None:
+        vpc_id = str(vpc.get("VpcId"))
+        if vpc.get("IsDefault"):
+            raise RuntimeError("Refusing to delete default AWS VPC")
+
+        self._validate_cloudnet_resource(
+            tags=vpc.get("Tags", []),
+            resource_id=vpc_id,
+            resource_type="VPC",
+        )
+        self._validate_no_instances(ec2, vpc_id)
+
+    def _validate_cloudnet_resource(
+        self,
+        tags: list[dict[str, str]],
+        resource_id: str,
+        resource_type: str,
+    ) -> None:
+        if not self._is_cloudnet_resource(tags):
+            raise RuntimeError(
+                f"Refusing to delete {resource_type} {resource_id}: "
+                "resource is not tagged as CloudNet-managed"
+            )
+
+    def _validate_no_instances(self, ec2: Any, vpc_id: str) -> None:
+        reservations = ec2.describe_instances(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["pending", "running", "stopping", "stopped"],
+                },
+            ]
+        ).get("Reservations", [])
+        instances = [
+            instance.get("InstanceId")
+            for reservation in reservations
+            for instance in reservation.get("Instances", [])
+        ]
+        if instances:
+            raise RuntimeError(
+                "Refusing to delete AWS VPC with non-CloudNet resources: "
+                + ", ".join(str(instance_id) for instance_id in instances)
+            )
