@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.db import get_session
 from app.main import app
 from app.models import DeploymentResource
+from app.routes import topology as topology_routes
 from app.services import connectivity_service
 
 
@@ -256,18 +257,44 @@ def test_validate_endpoint_runs_default_client_ping(
     client: TestClient,
     monkeypatch,
 ) -> None:
-    mock_openstack_for_ping(monkeypatch)
-    mock_paramiko(monkeypatch)
+    monkeypatch.setattr(
+        topology_routes,
+        "create_ping_test",
+        lambda session, topology, source, target: SimpleNamespace(status="PASSED"),
+    )
     topology_id = create_topology(client)
-    seed_server_resources(client, topology_id)
 
     response = client.post(f"/topologies/{topology_id}/validate")
 
     assert response.status_code == 200
     assert response.json() == {
         "topology_id": topology_id,
-        "source": "client-a",
-        "target": "client-b",
         "status": "PASSED",
-        "output": "3 packets transmitted, 3 packets received",
     }
+
+
+def test_validate_endpoint_returns_failed_when_ping_fails(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        topology_routes,
+        "create_ping_test",
+        lambda session, topology, source, target: SimpleNamespace(status="FAILED"),
+    )
+    topology_id = create_topology(client)
+
+    response = client.post(f"/topologies/{topology_id}/validate")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "topology_id": topology_id,
+        "status": "FAILED",
+    }
+
+
+def test_validate_endpoint_unknown_topology_returns_404(client: TestClient) -> None:
+    response = client.post("/topologies/999/validate")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "topology not found"}

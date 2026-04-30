@@ -201,6 +201,13 @@ def validate_topology_endpoint(
     if topology is None:
         raise HTTPException(status_code=404, detail="topology not found")
 
+    host_names = {node.name for node in topology.nodes if node.type == "host"}
+    if not {"client-a", "client-b"}.issubset(host_names):
+        raise HTTPException(
+            status_code=400,
+            detail="validation requires host nodes 'client-a' and 'client-b'",
+        )
+
     try:
         test = create_ping_test(
             session=session,
@@ -211,7 +218,11 @@ def validate_topology_endpoint(
     except ConnectivityTestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return connectivity_test_summary(test)
+    status = "PASSED" if test.status == "PASSED" else "FAILED"
+    return {
+        "topology_id": topology_id,
+        "status": status,
+    }
 
 
 @router.post("/{topology_id}/failures/node-down")
