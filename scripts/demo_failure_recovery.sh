@@ -126,7 +126,16 @@ create_response="$(curl -sS -X POST "${API_BASE_URL}/topologies" \
 
 rm -f "${tmp_topology}"
 
-echo "Created topology"
+ensure_no_api_error "${create_response}" "topology creation"
+
+topology_id="$(jq -r '.id // empty' <<<"${create_response}")"
+if [[ -z "${topology_id}" || "${topology_id}" == "null" ]]; then
+  echo "Failed to extract topology id" >&2
+  echo "${create_response}" | jq . >&2
+  exit 1
+fi
+
+echo "Created topology ${topology_id} (${TOPOLOGY_NAME})"
 
 step "Deploying topology"
 deploy_response="$(api_post "/topologies/${topology_id}/deploy")"
