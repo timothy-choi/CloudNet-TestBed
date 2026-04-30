@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -373,6 +374,7 @@ def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
 def test_aws_deploy_creates_instances_and_aws_resource_types(
     client: TestClient,
     monkeypatch,
+    caplog,
 ) -> None:
     class AWSLikeProvider(MockProvider):
         name = "aws"
@@ -420,7 +422,8 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
     monkeypatch.setattr(provider, "create_server", create_server)
 
     topology_id = create_topology(client)
-    response = client.post(f"/topologies/{topology_id}/deploy")
+    with caplog.at_level(logging.DEBUG, logger=deployment_service.__name__):
+        response = client.post(f"/topologies/{topology_id}/deploy")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -450,6 +453,45 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
             },
         ],
     }
+    assert "Creating EC2 instance for node client-a" in caplog.text
+    assert "Creating EC2 instance for node client-b" in caplog.text
+
+    resources_response = client.get(f"/topologies/{topology_id}/resources")
+    assert resources_response.status_code == 200
+    assert [
+        {
+            "type": resource["type"],
+            "name": resource["name"],
+            "openstack_id": resource["openstack_id"],
+        }
+        for resource in resources_response.json()["resources"]
+    ] == [
+        {
+            "type": "aws_vpc",
+            "name": "deploy-test-net-1",
+            "openstack_id": "vpc-1",
+        },
+        {
+            "type": "aws_subnet",
+            "name": "deploy-test-net-1-subnet",
+            "openstack_id": "subnet-1",
+        },
+        {
+            "type": "aws_security_group",
+            "name": "cloudnet-sg",
+            "openstack_id": "sg-1",
+        },
+        {
+            "type": "aws_instance",
+            "name": "client-a",
+            "openstack_id": "i-client-a",
+        },
+        {
+            "type": "aws_instance",
+            "name": "client-b",
+            "openstack_id": "i-client-b",
+        },
+    ]
 
 
 def test_aws_deploy_enforces_max_instances_before_creating_resources(
