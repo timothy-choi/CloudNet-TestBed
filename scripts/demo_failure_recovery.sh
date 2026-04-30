@@ -100,7 +100,7 @@ create_response="$(api_post "/topologies" "{
     {\"name\": \"client-b\", \"type\": \"host\"}
   ],
   \"links\": [
-    {\"from\": \"client-a\", \"to\": \"client-b\", \"subnet\": \"10.50.1.0/24\"}
+    {\"from_node\": \"client-a\", \"to_node\": \"client-b\", \"subnet\": \"10.50.1.0/24\"}
   ]
 }")"
 topology_id="$(jq -r '.id // empty' <<<"${create_response}")"
