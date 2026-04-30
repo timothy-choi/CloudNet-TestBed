@@ -14,13 +14,17 @@ require_command() {
 api_post() {
   local path="$1"
   local body="${2:-{}}"
+  local tmpfile
 
-  # Send JSON through stdin instead of shell-escaped -d strings.
-  # This avoids malformed JSON when the body contains newlines/quotes.
-  printf '%s' "${body}" | curl -sS \
+  tmpfile="$(mktemp)"
+  printf '%s' "${body}" > "${tmpfile}"
+
+  curl -sS \
     -X POST "${API_BASE_URL}${path}" \
     -H "Content-Type: application/json" \
-    --data-binary @-
+    --data-binary @"${tmpfile}"
+
+  rm -f "${tmpfile}"
 }
 
 api_get() {
