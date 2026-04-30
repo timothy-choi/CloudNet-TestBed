@@ -250,3 +250,24 @@ def test_connectivity_tests_endpoint_returns_saved_tests(
     assert body["tests"][0]["target"] == "client-b"
     assert body["tests"][0]["test_type"] == "ping"
     assert body["tests"][0]["status"] == "PASSED"
+
+
+def test_validate_endpoint_runs_default_client_ping(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    mock_openstack_for_ping(monkeypatch)
+    mock_paramiko(monkeypatch)
+    topology_id = create_topology(client)
+    seed_server_resources(client, topology_id)
+
+    response = client.post(f"/topologies/{topology_id}/validate")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "topology_id": topology_id,
+        "source": "client-a",
+        "target": "client-b",
+        "status": "PASSED",
+        "output": "3 packets transmitted, 3 packets received",
+    }

@@ -1,4 +1,4 @@
-.PHONY: install run run-port stop free-port test lint-check dev
+.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery
 
 PORT ?= 8010
 PYTHON ?= python3
@@ -25,3 +25,9 @@ lint-check:
 	$(PYTHON) -m compileall backend/app
 
 dev: stop run
+
+check-api:
+	./scripts/check_api.sh
+
+demo-failure-recovery:
+	./scripts/demo_failure_recovery.sh

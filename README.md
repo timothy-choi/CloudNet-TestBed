@@ -133,6 +133,31 @@ Run tests:
 make test
 ```
 
+## Failure Recovery Demo
+
+With OpenStack credentials configured and the backend running, this demo exercises the full control-plane loop:
+
+Deploy -> Validate PASSED -> Inject failure -> Validate FAILED -> Recover -> Validate PASSED
+
+```bash
+make dev
+scripts/check_api.sh
+scripts/demo_failure_recovery.sh
+```
+
+You can also run the script through Make:
+
+```bash
+make check-api
+make demo-failure-recovery
+```
+
+If your API is not on the default port, set `CLOUDNET_API_BASE_URL`:
+
+```bash
+CLOUDNET_API_BASE_URL=http://127.0.0.1:8020 scripts/demo_failure_recovery.sh
+```
+
 If port 8010 is busy, free it:
 
 ```bash

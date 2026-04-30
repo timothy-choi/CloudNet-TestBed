@@ -192,6 +192,28 @@ def get_connectivity_tests(
     }
 
 
+@router.post("/{topology_id}/validate")
+def validate_topology_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        test = create_ping_test(
+            session=session,
+            topology=topology,
+            source="client-a",
+            target="client-b",
+        )
+    except ConnectivityTestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return connectivity_test_summary(test)
+
+
 @router.post("/{topology_id}/failures/node-down")
 def inject_node_down_endpoint(
     topology_id: int,
