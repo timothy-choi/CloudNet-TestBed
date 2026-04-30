@@ -1,3 +1,4 @@
+import time
 from typing import Any, NoReturn
 
 from app.core.config import AWSSettings, get_aws_settings
@@ -281,6 +282,70 @@ class AWSProvider(BaseProvider):
     def max_instances_per_deploy(self) -> int:
         return get_aws_settings().max_instances_per_deploy
 
+    def get_server_fixed_ip(
+        self,
+        server_id: str,
+        network_name: str | None = None,
+    ) -> str:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            reservations = ec2.describe_instances(InstanceIds=[server_id]).get(
+                "Reservations",
+                [],
+            )
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance lookup failed: {self._error_detail(exc)}"
+            ) from exc
+
+        for reservation in reservations:
+            for instance in reservation.get("Instances", []):
+                private_ip = instance.get("PrivateIpAddress")
+                if private_ip:
+                    return str(private_ip)
+
+        raise RuntimeError(f"No private IP found for AWS instance {server_id}")
+
+    def run_ping(self, source_server_id: str, target_ip: str) -> str:
+        settings = self._validated_settings(require_default_ami=False)
+        ssm = self._client("ssm", settings)
+        command = f"ping -c 3 {target_ip}"
+        try:
+            command_response = ssm.send_command(
+                InstanceIds=[source_server_id],
+                DocumentName="AWS-RunShellScript",
+                Parameters={"commands": [command]},
+            )
+            command_id = command_response["Command"]["CommandId"]
+            invocation = self._poll_ssm_invocation(
+                ssm=ssm,
+                command_id=command_id,
+                instance_id=source_server_id,
+            )
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                "AWS SSM ping failed. Ensure instances have an IAM role with "
+                "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
+                + self._error_detail(exc)
+            ) from exc
+
+        status = invocation.get("Status")
+        output = "\n".join(
+            part
+            for part in [
+                invocation.get("StandardOutputContent", "").strip(),
+                invocation.get("StandardErrorContent", "").strip(),
+            ]
+            if part
+        )
+        if status != "Success":
+            raise RuntimeError(
+                f"AWS SSM ping failed with status {status}: "
+                + (output or "no command output")
+            )
+        return output
+
     def _client(self, service_name: str, settings: AWSSettings) -> Any:
         import boto3
 
@@ -290,6 +355,35 @@ class AWSProvider(BaseProvider):
             aws_access_key_id=settings.access_key_id,
             aws_secret_access_key=settings.secret_access_key,
         )
+
+    def _poll_ssm_invocation(
+        self,
+        ssm: Any,
+        command_id: str,
+        instance_id: str,
+        max_attempts: int = 20,
+        delay_seconds: float = 1.0,
+    ) -> dict[str, Any]:
+        pending_statuses = {"Pending", "InProgress", "Delayed"}
+        for attempt in range(max_attempts):
+            try:
+                invocation = ssm.get_command_invocation(
+                    CommandId=command_id,
+                    InstanceId=instance_id,
+                )
+            except self._client_error_class() as exc:
+                if "InvocationDoesNotExist" not in self._error_detail(exc):
+                    raise
+                if attempt == max_attempts - 1:
+                    raise
+                time.sleep(delay_seconds)
+                continue
+
+            if invocation.get("Status") not in pending_statuses:
+                return invocation
+            time.sleep(delay_seconds)
+
+        raise RuntimeError("AWS SSM ping timed out waiting for command invocation")
 
     def _validated_settings(self, require_default_ami: bool = True) -> AWSSettings:
         settings = get_aws_settings()

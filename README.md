@@ -184,6 +184,10 @@ Set `AWS_SSH_ALLOWED_CIDR` to your public IP CIDR if you need SSH access. If it
 is unset, CloudNet does not add a public SSH ingress rule. CloudNet does not
 create NAT Gateways, load balancers, or Elastic IPs.
 
+AWS connectivity validation uses Systems Manager Run Command instead of public
+SSH. Instances need an IAM role with `AmazonSSMManagedInstanceCore`, and the AMI
+must have SSM Agent installed, such as Amazon Linux 2023.
+
 CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
 default VPCs. Cleanup is required after demos to terminate CloudNet instances
 and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:

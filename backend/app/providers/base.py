@@ -83,3 +83,6 @@ class BaseProvider(ABC):
 
     def get_or_create_floating_ip_for_server(self, server_id: str) -> str:
         raise NotImplementedError
+
+    def run_ping(self, source_server_id: str, target_ip: str) -> str:
+        raise NotImplementedError

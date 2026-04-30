@@ -33,6 +33,13 @@ class FakeAWS:
         self.deleted_security_groups: list[str] = []
         self.security_groups: list[dict] = []
         self.operations: list[str] = []
+        self.ssm_invocations: list[dict] = [
+            {
+                "Status": "Success",
+                "StandardOutputContent": "3 packets transmitted, 3 received",
+                "StandardErrorContent": "",
+            }
+        ]
         self.vpcs_by_id: dict[str, dict] = {
             "vpc-created": {
                 "VpcId": "vpc-created",
@@ -88,6 +95,8 @@ class FakeAWS:
 
     def client(self, service_name: str, **kwargs):
         self.clients.append((service_name, kwargs))
+        if service_name == "ssm":
+            return FakeSSM(self)
         return FakeEC2(self)
 
 
@@ -170,7 +179,20 @@ class FakeEC2:
         self.fake_aws.deleted_vpcs.append(VpcId)
         self.fake_aws.operations.append(f"delete_vpc:{VpcId}")
 
-    def describe_instances(self, Filters):
+    def describe_instances(self, Filters=None, InstanceIds=None):
+        if InstanceIds is not None:
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": InstanceIds[0],
+                                "PrivateIpAddress": "10.20.1.11",
+                            }
+                        ]
+                    }
+                ]
+            }
         return {"Reservations": [{"Instances": self.fake_aws.instances}]}
 
     def run_instances(self, **kwargs):
@@ -228,6 +250,22 @@ class FakeWaiter:
 
     def wait(self, **kwargs) -> None:
         self.fake_aws.waits.append({"waiter_name": self.waiter_name, **kwargs})
+
+
+class FakeSSM:
+    def __init__(self, fake_aws: FakeAWS) -> None:
+        self.fake_aws = fake_aws
+        self.sent_commands: list[dict] = []
+
+    def send_command(self, **kwargs):
+        self.sent_commands.append(kwargs)
+        self.fake_aws.operations.append(f"ssm_send:{kwargs['InstanceIds'][0]}")
+        self.fake_aws.last_ssm_command = kwargs
+        return {"Command": {"CommandId": "cmd-1"}}
+
+    def get_command_invocation(self, CommandId, InstanceId):
+        self.fake_aws.operations.append(f"ssm_get:{InstanceId}")
+        return self.fake_aws.ssm_invocations.pop(0)
 
 
 def mock_boto3(monkeypatch) -> FakeAWS:
@@ -467,6 +505,54 @@ def test_aws_create_instance_disabled_returns_error(monkeypatch) -> None:
         )
     else:
         raise AssertionError("AWS instance creation was not disabled")
+
+
+def test_aws_get_private_ip_and_run_ping_via_ssm(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+    monkeypatch.setattr("app.providers.aws_provider.time.sleep", lambda seconds: None)
+    provider = AWSProvider()
+
+    assert provider.get_server_fixed_ip("i-target") == "10.20.1.11"
+    assert provider.run_ping("i-source", "10.20.1.11") == (
+        "3 packets transmitted, 3 received"
+    )
+    assert fake_aws.last_ssm_command == {
+        "InstanceIds": ["i-source"],
+        "DocumentName": "AWS-RunShellScript",
+        "Parameters": {"commands": ["ping -c 3 10.20.1.11"]},
+    }
+    assert fake_aws.operations[-2:] == ["ssm_send:i-source", "ssm_get:i-source"]
+
+
+def test_aws_run_ping_returns_clear_ssm_error(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+
+    class FailingSSM:
+        def send_command(self, **kwargs):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "AccessDeniedException",
+                        "Message": "missing ssm permission",
+                    }
+                },
+                "SendCommand",
+            )
+
+    provider = AWSProvider()
+    monkeypatch.setattr(provider, "_client", lambda service_name, settings: FailingSSM())
+
+    try:
+        provider.run_ping("i-source", "10.20.1.11")
+    except RuntimeError as exc:
+        assert str(exc) == (
+            "AWS SSM ping failed. Ensure instances have an IAM role with "
+            "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
+            "AccessDeniedException: missing ssm permission"
+        )
+    else:
+        raise AssertionError("AWS SSM error was not surfaced")
 
 
 def test_aws_create_instance_runs_when_enabled(monkeypatch) -> None:

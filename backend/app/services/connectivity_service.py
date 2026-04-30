@@ -80,13 +80,16 @@ def create_ping_test(
     try:
         provider = get_provider()
         target_fixed_ip = provider.get_server_fixed_ip(target_server_id)
-        source_floating_ip = provider.get_or_create_floating_ip_for_server(
-            source_server_id
-        )
-        output = _run_ping_over_ssh(
-            source_floating_ip=source_floating_ip,
-            target_fixed_ip=target_fixed_ip,
-        )
+        if provider.name == "aws":
+            output = provider.run_ping(source_server_id, target_fixed_ip)
+        else:
+            source_floating_ip = provider.get_or_create_floating_ip_for_server(
+                source_server_id
+            )
+            output = _run_ping_over_ssh(
+                source_floating_ip=source_floating_ip,
+                target_fixed_ip=target_fixed_ip,
+            )
         status = "PASSED"
     except Exception as exc:
         output = str(exc)
@@ -118,7 +121,7 @@ def _server_resources_by_name(
     return {
         resource.resource_name: resource
         for resource in resources
-        if resource.resource_type == "nova_server"
+        if resource.resource_type in {"nova_server", "aws_instance"}
     }
 
 

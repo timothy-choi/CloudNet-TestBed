@@ -81,6 +81,32 @@ def seed_server_resources(client: TestClient, topology_id: int) -> None:
         session_generator.close()
 
 
+def seed_aws_instance_resources(client: TestClient, topology_id: int) -> None:
+    session_override = app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        session.add(
+            DeploymentResource(
+                topology_id=topology_id,
+                resource_type="aws_instance",
+                resource_name="client-a",
+                openstack_id="i-client-a",
+            )
+        )
+        session.add(
+            DeploymentResource(
+                topology_id=topology_id,
+                resource_type="aws_instance",
+                resource_name="client-b",
+                openstack_id="i-client-b",
+            )
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+
 def mock_openstack_for_ping(monkeypatch) -> None:
     provider = MockProvider()
     monkeypatch.setattr(connectivity_service, "get_provider", lambda: provider)
@@ -94,6 +120,27 @@ def mock_openstack_for_ping(monkeypatch) -> None:
         "get_or_create_floating_ip_for_server",
         lambda server_id: "172.24.4.101",
     )
+
+
+def mock_aws_for_ping(monkeypatch) -> list[tuple[str, str]]:
+    class AWSLikeProvider(MockProvider):
+        name = "aws"
+
+    calls: list[tuple[str, str]] = []
+    provider = AWSLikeProvider()
+    monkeypatch.setattr(connectivity_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(
+        provider,
+        "get_server_fixed_ip",
+        lambda server_id: "10.30.1.23",
+    )
+
+    def run_ping(source_server_id: str, target_ip: str) -> str:
+        calls.append((source_server_id, target_ip))
+        return "3 packets transmitted, 3 received"
+
+    monkeypatch.setattr(provider, "run_ping", run_ping)
+    return calls
 
 
 def mock_paramiko(
@@ -197,6 +244,57 @@ def test_successful_ping_creates_passed_test(client: TestClient, monkeypatch) ->
         "status": "PASSED",
         "output": "3 packets transmitted, 3 packets received",
     }
+
+
+def test_aws_ping_uses_ssm_provider_path(client: TestClient, monkeypatch) -> None:
+    calls = mock_aws_for_ping(monkeypatch)
+    topology_id = create_topology(client)
+    seed_aws_instance_resources(client, topology_id)
+
+    response = client.post(
+        f"/topologies/{topology_id}/tests/ping",
+        json={"source": "client-a", "target": "client-b"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "topology_id": topology_id,
+        "source": "client-a",
+        "target": "client-b",
+        "status": "PASSED",
+        "output": "3 packets transmitted, 3 received",
+    }
+    assert calls == [("i-client-a", "10.30.1.23")]
+
+
+def test_aws_ping_ssm_error_creates_failed_test(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    class AWSLikeProvider(MockProvider):
+        name = "aws"
+
+    provider = AWSLikeProvider()
+    monkeypatch.setattr(connectivity_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(provider, "get_server_fixed_ip", lambda server_id: "10.30.1.23")
+    monkeypatch.setattr(
+        provider,
+        "run_ping",
+        lambda source_server_id, target_ip: (_ for _ in ()).throw(
+            RuntimeError("AWS SSM ping failed: SSM unavailable")
+        ),
+    )
+    topology_id = create_topology(client)
+    seed_aws_instance_resources(client, topology_id)
+
+    response = client.post(
+        f"/topologies/{topology_id}/tests/ping",
+        json={"source": "client-a", "target": "client-b"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "FAILED"
+    assert response.json()["output"] == "AWS SSM ping failed: SSM unavailable"
 
 
 def test_failed_ssh_creates_failed_test(client: TestClient, monkeypatch) -> None:
