@@ -118,7 +118,7 @@ create_body="$(jq -n \
       {name: "client-b", type: "host"}
     ],
     links: [
-      {from_node: "client-a", to_node: "client-b", subnet: "10.50.1.0/24"}
+      {from: "client-a", to: "client-b", subnet: "10.50.1.0/24"}
     ]
   }'
 )"
