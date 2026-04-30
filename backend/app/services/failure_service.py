@@ -87,12 +87,14 @@ def _record_node_action(
     if node is None:
         raise FailureError(f"unknown host node '{node_name}'")
 
-    server_resource = _server_resource_by_name(
-        list_topology_resources(session, topology.id),
-        node.name,
-    )
+    resources = list_topology_resources(session, topology.id)
+    server_resource = _server_resource_by_name(resources, node.name)
     if server_resource is None:
-        raise FailureError(f"server for node '{node_name}' has not been deployed")
+        available_resources = _available_server_resources(resources)
+        raise FailureError(
+            f"server for node '{node_name}' has not been deployed; "
+            f"available server resources: {available_resources}"
+        )
 
     try:
         provider = get_provider()
@@ -135,6 +137,20 @@ def _server_resource_by_name(
     name: str,
 ) -> DeploymentResource | None:
     for resource in resources:
-        if resource.resource_type == "nova_server" and resource.resource_name == name:
+        if (
+            resource.resource_type in {"nova_server", "aws_instance"}
+            and resource.resource_name == name
+        ):
             return resource
     return None
+
+
+def _available_server_resources(resources: list[DeploymentResource]) -> str:
+    server_resources = [
+        f"{resource.resource_type}:{resource.resource_name}"
+        for resource in resources
+        if resource.resource_type in {"nova_server", "aws_instance"}
+    ]
+    if not server_resources:
+        return "none"
+    return ", ".join(server_resources)

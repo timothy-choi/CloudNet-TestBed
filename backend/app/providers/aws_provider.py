@@ -271,10 +271,26 @@ class AWSProvider(BaseProvider):
         }
 
     def stop_server(self, server_id: str) -> dict[str, Any]:
-        self._not_implemented()
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            ec2.stop_instances(InstanceIds=[server_id])
+            return {"id": server_id, "status": self.get_server_status(server_id)}
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance stop failed: {self._error_detail(exc)}"
+            ) from exc
 
     def start_server(self, server_id: str) -> dict[str, Any]:
-        self._not_implemented()
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            ec2.start_instances(InstanceIds=[server_id])
+            return {"id": server_id, "status": self.get_server_status(server_id)}
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance start failed: {self._error_detail(exc)}"
+            ) from exc
 
     def delete_resource(
         self,
@@ -341,6 +357,20 @@ class AWSProvider(BaseProvider):
 
     def max_instances_per_deploy(self) -> int:
         return get_aws_settings().max_instances_per_deploy
+
+    def get_server_status(self, server_id: str) -> str:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            instance = self._describe_instance_with_retry(
+                ec2=ec2,
+                instance_id=server_id,
+            )
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance status lookup failed: {self._error_detail(exc)}"
+            ) from exc
+        return str(instance.get("State", {}).get("Name", "unknown"))
 
     def get_server_fixed_ip(
         self,

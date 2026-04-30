@@ -41,6 +41,8 @@ class FakeAWS:
         self.describe_instance_not_found_failures = 0
         self.run_instances_params: dict | None = None
         self.ingress_permissions: list[dict] = []
+        self.stopped_instances: list[str] = []
+        self.started_instances: list[str] = []
         self.terminated_instances: list[str] = []
         self.deleted_security_groups: list[str] = []
         self.security_groups: list[dict] = []
@@ -292,6 +294,16 @@ class FakeEC2:
         self.fake_aws.terminated_instances.extend(InstanceIds)
         for instance_id in InstanceIds:
             self.fake_aws.operations.append(f"terminate_instance:{instance_id}")
+
+    def stop_instances(self, InstanceIds):
+        self.fake_aws.stopped_instances.extend(InstanceIds)
+        for instance_id in InstanceIds:
+            self.fake_aws.operations.append(f"stop_instance:{instance_id}")
+
+    def start_instances(self, InstanceIds):
+        self.fake_aws.started_instances.extend(InstanceIds)
+        for instance_id in InstanceIds:
+            self.fake_aws.operations.append(f"start_instance:{instance_id}")
 
     def describe_security_groups(self, Filters):
         return {"SecurityGroups": self.fake_aws.security_groups}
@@ -788,6 +800,24 @@ def test_aws_create_instance_retries_when_instance_id_is_eventually_consistent(
     assert fake_aws.describe_instance_calls == 2
 
 
+def test_aws_stop_and_start_instance(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+
+    provider = AWSProvider()
+
+    assert provider.stop_server("i-created") == {
+        "id": "i-created",
+        "status": "running",
+    }
+    assert provider.start_server("i-created") == {
+        "id": "i-created",
+        "status": "running",
+    }
+    assert fake_aws.stopped_instances == ["i-created"]
+    assert fake_aws.started_instances == ["i-created"]
+
+
 def test_aws_security_group_rules_ignore_duplicates(monkeypatch) -> None:
     set_aws_env(monkeypatch)
     monkeypatch.setenv("AWS_ALLOW_CREATE_INSTANCES", "true")
@@ -939,8 +969,6 @@ def test_aws_unimplemented_compute_methods_are_not_implemented() -> None:
 
     for action in [
         lambda: provider.create_router("router-1"),
-        lambda: provider.stop_server("i-123"),
-        lambda: provider.start_server("i-123"),
         lambda: provider.delete_resource("instance", "i-123"),
     ]:
         try:
