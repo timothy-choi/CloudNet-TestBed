@@ -3,7 +3,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.models import DeploymentResource, FailureEvent, Node, Topology
-from app.services import openstack_client
+from app.providers.factory import get_provider
 from app.services.deployment_service import list_topology_resources
 
 
@@ -52,7 +52,7 @@ def inject_node_down(
         topology=topology,
         node_name=node_name,
         action="node-down",
-        openstack_action=openstack_client.stop_server,
+        provider_action="stop_server",
         success_output_prefix="Stopped server",
     )
 
@@ -67,7 +67,7 @@ def recover_node(
         topology=topology,
         node_name=node_name,
         action="recover-node",
-        openstack_action=openstack_client.start_server,
+        provider_action="start_server",
         success_output_prefix="Started server",
     )
 
@@ -77,7 +77,7 @@ def _record_node_action(
     topology: Topology,
     node_name: str,
     action: str,
-    openstack_action,
+    provider_action: str,
     success_output_prefix: str,
 ) -> FailureEvent:
     if topology.id is None:
@@ -95,8 +95,11 @@ def _record_node_action(
         raise FailureError(f"server for node '{node_name}' has not been deployed")
 
     try:
-        openstack_action(server_resource.openstack_id)
-        server_status = openstack_client.get_server_status(server_resource.openstack_id)
+        provider = get_provider()
+        action_result = getattr(provider, provider_action)(server_resource.openstack_id)
+        server_status = action_result.get("status")
+        if server_status is None:
+            server_status = provider.get_server_status(server_resource.openstack_id)
         status = "SUCCESS"
         output = (
             f"{success_output_prefix} {server_resource.openstack_id}; "

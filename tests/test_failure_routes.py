@@ -8,6 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.db import get_session
 from app.main import app
 from app.models import DeploymentResource
+from app.providers.mock_provider import MockProvider
 from app.services import failure_service
 
 
@@ -69,17 +70,24 @@ def seed_server_resource(client: TestClient, topology_id: int, node_name: str) -
         session_generator.close()
 
 
+def mock_failure_provider(monkeypatch) -> MockProvider:
+    provider = MockProvider()
+    monkeypatch.setattr(failure_service, "get_provider", lambda: provider)
+    return provider
+
+
 def test_node_down_calls_stop_server(client: TestClient, monkeypatch) -> None:
     calls: list[str] = []
+    provider = mock_failure_provider(monkeypatch)
+
+    def stop_server(server_id: str) -> dict[str, str]:
+        calls.append(server_id)
+        return {"id": server_id, "status": "SHUTOFF"}
+
     monkeypatch.setattr(
-        failure_service.openstack_client,
+        provider,
         "stop_server",
-        lambda server_id: calls.append(server_id),
-    )
-    monkeypatch.setattr(
-        failure_service.openstack_client,
-        "get_server_status",
-        lambda server_id: "SHUTOFF",
+        stop_server,
     )
 
     topology_id = create_topology(client)
@@ -98,15 +106,16 @@ def test_node_down_calls_stop_server(client: TestClient, monkeypatch) -> None:
 
 def test_recover_calls_start_server(client: TestClient, monkeypatch) -> None:
     calls: list[str] = []
+    provider = mock_failure_provider(monkeypatch)
+
+    def start_server(server_id: str) -> dict[str, str]:
+        calls.append(server_id)
+        return {"id": server_id, "status": "ACTIVE"}
+
     monkeypatch.setattr(
-        failure_service.openstack_client,
+        provider,
         "start_server",
-        lambda server_id: calls.append(server_id),
-    )
-    monkeypatch.setattr(
-        failure_service.openstack_client,
-        "get_server_status",
-        lambda server_id: "ACTIVE",
+        start_server,
     )
 
     topology_id = create_topology(client)
@@ -146,15 +155,11 @@ def test_unknown_node_returns_400(client: TestClient) -> None:
 
 
 def test_failure_event_is_stored(client: TestClient, monkeypatch) -> None:
+    provider = mock_failure_provider(monkeypatch)
     monkeypatch.setattr(
-        failure_service.openstack_client,
+        provider,
         "stop_server",
-        lambda server_id: None,
-    )
-    monkeypatch.setattr(
-        failure_service.openstack_client,
-        "get_server_status",
-        lambda server_id: "SHUTOFF",
+        lambda server_id: {"id": server_id, "status": "SHUTOFF"},
     )
 
     topology_id = create_topology(client)

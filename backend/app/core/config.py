@@ -16,6 +16,24 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+SUPPORTED_PROVIDERS = {"openstack", "proxmox", "mock"}
+
+
+def get_cloudnet_provider() -> str:
+    configured_provider = os.getenv("CLOUDNET_PROVIDER")
+    if configured_provider:
+        provider = configured_provider.strip().lower()
+        if provider not in SUPPORTED_PROVIDERS:
+            supported = ", ".join(sorted(SUPPORTED_PROVIDERS))
+            raise RuntimeError(
+                f"Unsupported CLOUDNET_PROVIDER '{configured_provider}'. "
+                f"Supported values: {supported}"
+            )
+        return provider
+
+    return "openstack" if _env_bool("OPENSTACK_ENABLED", default=False) else "mock"
+
+
 @dataclass(frozen=True)
 class OpenStackSettings:
     enabled: bool

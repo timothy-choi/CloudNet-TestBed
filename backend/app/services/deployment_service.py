@@ -3,7 +3,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.models import DeploymentResource, Topology
-from app.services import openstack_client
+from app.providers.factory import get_provider
 from app.topology_compiler import compile_topology
 
 
@@ -75,10 +75,14 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
     plan = compile_topology(_topology_to_input(topology))
     created_resources: list[DeploymentResource] = []
     network_ids_by_name: dict[str, str] = {}
+    provider = get_provider()
 
     try:
         for network_plan in plan["networks"]:
-            network = openstack_client.create_network(network_plan["name"])
+            network = provider.create_network(
+                name=network_plan["name"],
+                cidr=network_plan["subnet"],
+            )
             network_ids_by_name[network_plan["name"]] = network["id"]
             network_resource = DeploymentResource(
                 topology_id=topology.id,
@@ -92,7 +96,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
             created_resources.append(network_resource)
 
             subnet_name = f"{network_plan['name']}-subnet"
-            subnet = openstack_client.create_subnet(
+            subnet = provider.create_subnet(
                 network_id=network["id"],
                 name=subnet_name,
                 cidr=network_plan["subnet"],
@@ -117,7 +121,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
                 networks=plan["networks"],
                 network_ids_by_name=network_ids_by_name,
             )
-            server = openstack_client.create_server(
+            server = provider.create_server(
                 name=server_plan["name"],
                 network_id=server_network_id,
             )
@@ -135,7 +139,8 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
         topology.status = "FAILED"
         session.add(topology)
         session.commit()
-        raise DeploymentError(f"OpenStack deployment failed: {exc}") from exc
+        provider_label = "OpenStack" if provider.name == "openstack" else "Provider"
+        raise DeploymentError(f"{provider_label} deployment failed: {exc}") from exc
 
     topology.status = "ACTIVE"
     session.add(topology)

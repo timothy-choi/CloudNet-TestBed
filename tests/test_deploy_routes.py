@@ -8,6 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.db import get_session
 from app.main import app
+from app.providers.mock_provider import MockProvider
 from app.services import deployment_service
 
 
@@ -54,10 +55,17 @@ def create_topology(
     return response.json()["id"]
 
 
+def mock_deployment_provider(monkeypatch) -> MockProvider:
+    provider = MockProvider()
+    monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
+    return provider
+
+
 def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
+    provider = mock_deployment_provider(monkeypatch)
 
-    def create_network(name: str) -> dict[str, str]:
+    def create_network(name: str, cidr: str | None = None) -> dict[str, str]:
         calls.append(("network", {"name": name}))
         return {"id": "net-1", "name": name, "status": "ACTIVE"}
 
@@ -85,21 +93,9 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
             "addresses": {},
         }
 
-    monkeypatch.setattr(
-        deployment_service.openstack_client,
-        "create_network",
-        create_network,
-    )
-    monkeypatch.setattr(
-        deployment_service.openstack_client,
-        "create_subnet",
-        create_subnet,
-    )
-    monkeypatch.setattr(
-        deployment_service.openstack_client,
-        "create_server",
-        create_server,
-    )
+    monkeypatch.setattr(provider, "create_network", create_network)
+    monkeypatch.setattr(provider, "create_subnet", create_subnet)
+    monkeypatch.setattr(provider, "create_server", create_server)
 
     topology_id = create_topology(client)
     response = client.post(f"/topologies/{topology_id}/deploy")
@@ -138,13 +134,14 @@ def test_topology_status_becomes_active_on_success(
     client: TestClient,
     monkeypatch,
 ) -> None:
+    provider = mock_deployment_provider(monkeypatch)
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_network",
-        lambda name: {"id": "net-1", "name": name, "status": "ACTIVE"},
+        lambda name, cidr=None: {"id": "net-1", "name": name, "status": "ACTIVE"},
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_subnet",
         lambda network_id, name, cidr: {
             "id": "subnet-1",
@@ -154,7 +151,7 @@ def test_topology_status_becomes_active_on_success(
         },
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_server",
         lambda name, network_id: {
             "id": f"server-{name}",
@@ -178,11 +175,13 @@ def test_topology_status_becomes_failed_on_client_exception(
     client: TestClient,
     monkeypatch,
 ) -> None:
-    def fail_create_network(name: str) -> dict[str, str]:
+    provider = mock_deployment_provider(monkeypatch)
+
+    def fail_create_network(name: str, cidr: str | None = None) -> dict[str, str]:
         raise RuntimeError("neutron unavailable")
 
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_network",
         fail_create_network,
     )
@@ -192,7 +191,7 @@ def test_topology_status_becomes_failed_on_client_exception(
 
     assert response.status_code == 503
     assert response.json() == {
-        "detail": "OpenStack deployment failed: neutron unavailable"
+        "detail": "Provider deployment failed: neutron unavailable"
     }
 
     topology_response = client.get(f"/topologies/{topology_id}")
@@ -204,13 +203,14 @@ def test_resources_endpoint_returns_saved_resources(
     client: TestClient,
     monkeypatch,
 ) -> None:
+    provider = mock_deployment_provider(monkeypatch)
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_network",
-        lambda name: {"id": "net-1", "name": name, "status": "ACTIVE"},
+        lambda name, cidr=None: {"id": "net-1", "name": name, "status": "ACTIVE"},
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_subnet",
         lambda network_id, name, cidr: {
             "id": "subnet-1",
@@ -220,7 +220,7 @@ def test_resources_endpoint_returns_saved_resources(
         },
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_server",
         lambda name, network_id: {
             "id": f"server-{name}",
@@ -271,13 +271,14 @@ def test_resources_endpoint_returns_saved_resources(
 
 
 def test_deploy_refuses_existing_resources(client: TestClient, monkeypatch) -> None:
+    provider = mock_deployment_provider(monkeypatch)
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_network",
-        lambda name: {"id": "net-1", "name": name, "status": "ACTIVE"},
+        lambda name, cidr=None: {"id": "net-1", "name": name, "status": "ACTIVE"},
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_subnet",
         lambda network_id, name, cidr: {
             "id": "subnet-1",
@@ -287,7 +288,7 @@ def test_deploy_refuses_existing_resources(client: TestClient, monkeypatch) -> N
         },
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_server",
         lambda name, network_id: {
             "id": f"server-{name}",
@@ -312,14 +313,15 @@ def test_deploy_refuses_existing_resources(client: TestClient, monkeypatch) -> N
 
 def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
     server_calls: list[dict[str, str]] = []
+    provider = mock_deployment_provider(monkeypatch)
 
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_network",
-        lambda name: {"id": "net-1", "name": name, "status": "ACTIVE"},
+        lambda name, cidr=None: {"id": "net-1", "name": name, "status": "ACTIVE"},
     )
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_subnet",
         lambda network_id, name, cidr: {
             "id": "subnet-1",
@@ -339,7 +341,7 @@ def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
         }
 
     monkeypatch.setattr(
-        deployment_service.openstack_client,
+        provider,
         "create_server",
         create_server,
     )

@@ -3,7 +3,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.models import ConnectivityTest, DeploymentResource, Node, Topology
-from app.services import openstack_client
+from app.providers.factory import get_provider
 from app.services.deployment_service import list_topology_resources
 
 
@@ -78,8 +78,9 @@ def create_ping_test(
     target_server_id = server_resources[target].openstack_id
 
     try:
-        target_fixed_ip = openstack_client.get_server_fixed_ip(target_server_id)
-        source_floating_ip = openstack_client.get_or_create_floating_ip_for_server(
+        provider = get_provider()
+        target_fixed_ip = provider.get_server_fixed_ip(target_server_id)
+        source_floating_ip = provider.get_or_create_floating_ip_for_server(
             source_server_id
         )
         output = _run_ping_over_ssh(

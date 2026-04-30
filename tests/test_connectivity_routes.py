@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.db import get_session
 from app.main import app
 from app.models import DeploymentResource
+from app.providers.mock_provider import MockProvider
 from app.routes import topology as topology_routes
 from app.services import connectivity_service
 
@@ -81,13 +82,15 @@ def seed_server_resources(client: TestClient, topology_id: int) -> None:
 
 
 def mock_openstack_for_ping(monkeypatch) -> None:
+    provider = MockProvider()
+    monkeypatch.setattr(connectivity_service, "get_provider", lambda: provider)
     monkeypatch.setattr(
-        connectivity_service.openstack_client,
+        provider,
         "get_server_fixed_ip",
         lambda server_id: "10.30.1.23",
     )
     monkeypatch.setattr(
-        connectivity_service.openstack_client,
+        provider,
         "get_or_create_floating_ip_for_server",
         lambda server_id: "172.24.4.101",
     )

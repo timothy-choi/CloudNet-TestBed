@@ -91,6 +91,17 @@ tests/
 make install
 ```
 
+## Providers
+
+CloudNet selects infrastructure with `CLOUDNET_PROVIDER`.
+
+- OpenStack: `CLOUDNET_PROVIDER=openstack`
+- Proxmox: planned
+- Mock: `CLOUDNET_PROVIDER=mock`
+
+If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when
+`OPENSTACK_ENABLED=true`; otherwise it uses the mock provider.
+
 ## OpenStack Setup
 
 Copy `.env.example` to `.env` and fill in your OpenStack credentials.
@@ -99,7 +110,7 @@ Copy `.env.example` to `.env` and fill in your OpenStack credentials.
 cp .env.example .env
 ```
 
-Set `OPENSTACK_ENABLED=true` when you want the API to sanity-check an OpenStack connection. The current OpenStack support only checks connectivity and lists existing images, flavors, and networks. It does not provision VMs or create networks yet.
+Set `OPENSTACK_ENABLED=true` when you want the API to sanity-check an OpenStack connection. Existing OpenStack deploy behavior is still available through the OpenStack provider.
 
 ## Local Development
 
