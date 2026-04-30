@@ -245,9 +245,16 @@ class AWSProvider(BaseProvider):
                 params["IamInstanceProfile"] = {"Name": instance_profile_name}
 
             instance = ec2.run_instances(**params)["Instances"][0]
+            instance_id = instance["InstanceId"]
+            ec2.get_waiter("instance_exists").wait(InstanceIds=[instance_id])
+            ec2.get_waiter("instance_running").wait(InstanceIds=[instance_id])
+            instance = self._describe_instance_with_retry(
+                ec2=ec2,
+                instance_id=instance_id,
+            )
             public_ip = instance.get("PublicIpAddress") or self._wait_for_public_ip(
                 ec2=ec2,
-                instance_id=instance["InstanceId"],
+                instance_id=instance_id,
             )
         except self._client_error_class() as exc:
             raise RuntimeError(
@@ -438,6 +445,37 @@ class AWSProvider(BaseProvider):
 
         raise RuntimeError("AWS SSM ping timed out waiting for command invocation")
 
+    def _describe_instance_with_retry(
+        self,
+        ec2: Any,
+        instance_id: str,
+        max_attempts: int = 10,
+        delay_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        for attempt in range(max_attempts):
+            try:
+                reservations = ec2.describe_instances(InstanceIds=[instance_id]).get(
+                    "Reservations",
+                    [],
+                )
+            except self._client_error_class() as exc:
+                if not self._is_invalid_instance_not_found(exc):
+                    raise
+                if attempt == max_attempts - 1:
+                    raise
+                time.sleep(delay_seconds)
+                continue
+
+            for reservation in reservations:
+                for instance in reservation.get("Instances", []):
+                    if instance.get("InstanceId") == instance_id:
+                        return instance
+            if attempt == max_attempts - 1:
+                break
+            time.sleep(delay_seconds)
+
+        raise RuntimeError(f"AWS instance not found after creation: {instance_id}")
+
     def _wait_for_public_ip(
         self,
         ec2: Any,
@@ -446,17 +484,29 @@ class AWSProvider(BaseProvider):
         delay_seconds: float = 1.0,
     ) -> str | None:
         for _ in range(max_attempts):
-            reservations = ec2.describe_instances(InstanceIds=[instance_id]).get(
-                "Reservations",
-                [],
-            )
-            for reservation in reservations:
-                for instance in reservation.get("Instances", []):
-                    public_ip = instance.get("PublicIpAddress")
-                    if public_ip:
-                        return str(public_ip)
+            try:
+                instance = self._describe_instance_with_retry(
+                    ec2=ec2,
+                    instance_id=instance_id,
+                    max_attempts=1,
+                    delay_seconds=delay_seconds,
+                )
+            except self._client_error_class() as exc:
+                if not self._is_invalid_instance_not_found(exc):
+                    raise
+            except RuntimeError:
+                pass
+            else:
+                public_ip = instance.get("PublicIpAddress")
+                if public_ip:
+                    return str(public_ip)
             time.sleep(delay_seconds)
         return None
+
+    def _is_invalid_instance_not_found(self, exc: Exception) -> bool:
+        response = getattr(exc, "response", {})
+        error = response.get("Error", {}) if isinstance(response, dict) else {}
+        return error.get("Code") == "InvalidInstanceID.NotFound"
 
     def _validated_settings(self, require_default_ami: bool = True) -> AWSSettings:
         settings = get_aws_settings()

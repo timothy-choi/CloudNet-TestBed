@@ -37,6 +37,8 @@ class FakeAWS:
         self.tags: list[dict] = []
         self.waits: list[dict] = []
         self.instances: list[dict] = []
+        self.describe_instance_calls = 0
+        self.describe_instance_not_found_failures = 0
         self.run_instances_params: dict | None = None
         self.ingress_permissions: list[dict] = []
         self.terminated_instances: list[str] = []
@@ -241,13 +243,30 @@ class FakeEC2:
 
     def describe_instances(self, Filters=None, InstanceIds=None):
         if InstanceIds is not None:
+            self.fake_aws.describe_instance_calls += 1
+            if self.fake_aws.describe_instance_not_found_failures:
+                self.fake_aws.describe_instance_not_found_failures -= 1
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "InvalidInstanceID.NotFound",
+                            "Message": "The instance ID does not exist",
+                        }
+                    },
+                    "DescribeInstances",
+                )
             return {
                 "Reservations": [
                     {
                         "Instances": [
                             {
                                 "InstanceId": InstanceIds[0],
-                                "PrivateIpAddress": "10.20.1.11",
+                                "State": {"Name": "running"},
+                                "PrivateIpAddress": (
+                                    "10.20.1.11"
+                                    if InstanceIds[0] == "i-target"
+                                    else "10.20.1.10"
+                                ),
                                 "PublicIpAddress": "198.51.100.10",
                             }
                         ]
@@ -714,7 +733,7 @@ def test_aws_create_instance_runs_when_enabled(monkeypatch) -> None:
     assert server == {
         "id": "i-created",
         "name": "client-a",
-        "status": "pending",
+        "status": "running",
         "private_ip": "10.20.1.10",
         "public_ip": "198.51.100.10",
         "security_group_id": "sg-created",
@@ -732,6 +751,10 @@ def test_aws_create_instance_runs_when_enabled(monkeypatch) -> None:
         }
     ]
     assert fake_aws.run_instances_params["KeyName"] == "cloudnet-key"
+    assert fake_aws.waits[-2:] == [
+        {"waiter_name": "instance_exists", "InstanceIds": ["i-created"]},
+        {"waiter_name": "instance_running", "InstanceIds": ["i-created"]},
+    ]
     assert fake_aws.ingress_permissions == [
         {
             "IpProtocol": "icmp",
@@ -746,6 +769,23 @@ def test_aws_create_instance_runs_when_enabled(monkeypatch) -> None:
             "IpRanges": [{"CidrIp": "203.0.113.10/32"}],
         },
     ]
+
+
+def test_aws_create_instance_retries_when_instance_id_is_eventually_consistent(
+    monkeypatch,
+) -> None:
+    set_aws_env(monkeypatch)
+    monkeypatch.setenv("AWS_ALLOW_CREATE_INSTANCES", "true")
+    fake_aws = mock_boto3(monkeypatch)
+    fake_aws.describe_instance_not_found_failures = 1
+    monkeypatch.setattr("app.providers.aws_provider.time.sleep", lambda seconds: None)
+
+    server = AWSProvider().create_server("client-a", "vpc-created", "subnet-a")
+
+    assert server["id"] == "i-created"
+    assert server["status"] == "running"
+    assert server["public_ip"] == "198.51.100.10"
+    assert fake_aws.describe_instance_calls == 2
 
 
 def test_aws_security_group_rules_ignore_duplicates(monkeypatch) -> None:
