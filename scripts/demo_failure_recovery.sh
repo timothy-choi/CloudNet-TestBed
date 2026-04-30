@@ -14,7 +14,7 @@ require_command() {
 api_post() {
   local path="$1"
   local body="${2:-{}}"
-  curl -fsS \
+  curl -sS \
     -X POST "${API_BASE_URL}${path}" \
     -H "Content-Type: application/json" \
     -d "${body}"
