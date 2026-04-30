@@ -59,7 +59,7 @@ class AWSProvider(BaseProvider):
             },
         ]
 
-    def list_networks(self) -> dict[str, list[dict[str, Any]]]:
+    def list_networks(self) -> list[dict[str, Any]]:
         settings = self._validated_settings(require_default_ami=False)
         ec2 = self._client("ec2", settings)
         try:
@@ -70,26 +70,30 @@ class AWSProvider(BaseProvider):
                 f"AWS network listing failed: {self._error_detail(exc)}"
             ) from exc
 
-        return {
-            "vpcs": [
-                {
-                    "id": vpc.get("VpcId"),
-                    "cidr": vpc.get("CidrBlock"),
-                    "state": vpc.get("State"),
-                    "is_default": vpc.get("IsDefault", False),
-                }
-                for vpc in vpcs
-            ],
-            "subnets": [
-                {
-                    "id": subnet.get("SubnetId"),
-                    "cidr": subnet.get("CidrBlock"),
-                    "state": subnet.get("State"),
-                    "is_default": bool(subnet.get("DefaultForAz", False)),
-                }
-                for subnet in subnets
-            ],
-        }
+        networks = [
+            {
+                "id": vpc.get("VpcId"),
+                "name": self._tag_name(vpc.get("Tags", [])),
+                "type": "vpc",
+                "cidr": vpc.get("CidrBlock"),
+                "state": vpc.get("State"),
+                "is_default": vpc.get("IsDefault", False),
+            }
+            for vpc in vpcs
+        ]
+        networks.extend(
+            {
+                "id": subnet.get("SubnetId"),
+                "name": self._tag_name(subnet.get("Tags", [])),
+                "type": "subnet",
+                "cidr": subnet.get("CidrBlock"),
+                "state": subnet.get("State"),
+                "is_default": bool(subnet.get("DefaultForAz", False)),
+                "parent_id": subnet.get("VpcId"),
+            }
+            for subnet in subnets
+        )
+        return networks
 
     def create_network(
         self,
@@ -220,3 +224,9 @@ class AWSProvider(BaseProvider):
         if code and message:
             return f"{code}: {message}"
         return str(exc)
+
+    def _tag_name(self, tags: list[dict[str, str]]) -> str:
+        for tag in tags:
+            if tag.get("Key") == "Name":
+                return tag.get("Value", "")
+        return ""

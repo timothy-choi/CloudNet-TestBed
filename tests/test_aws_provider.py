@@ -1,8 +1,10 @@
 import sys
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
 from botocore.exceptions import ClientError
 
+from app.main import app
 from app.providers.aws_provider import AWSProvider
 from app.providers.factory import get_provider
 
@@ -43,6 +45,7 @@ class FakeEC2:
                     "CidrBlock": "10.0.0.0/16",
                     "State": "available",
                     "IsDefault": True,
+                    "Tags": [{"Key": "Name", "Value": "default"}],
                 }
             ]
         }
@@ -56,6 +59,7 @@ class FakeEC2:
                     "CidrBlock": "10.0.1.0/24",
                     "State": "available",
                     "DefaultForAz": True,
+                    "Tags": [],
                 }
             ]
         }
@@ -131,23 +135,55 @@ def test_aws_lists_images_and_networks(monkeypatch) -> None:
     assert provider.list_images() == [
         {"id": "ami-123", "name": "ami-123", "status": "configured"}
     ]
-    assert provider.list_networks() == {
-        "vpcs": [
+    assert provider.list_networks() == [
+        {
+            "id": "vpc-1",
+            "name": "default",
+            "type": "vpc",
+            "cidr": "10.0.0.0/16",
+            "state": "available",
+            "is_default": True,
+        },
+        {
+            "id": "subnet-1",
+            "name": "",
+            "type": "subnet",
+            "cidr": "10.0.1.0/24",
+            "state": "available",
+            "is_default": True,
+            "parent_id": "vpc-1",
+        },
+    ]
+
+
+def test_provider_networks_route_wraps_flat_aws_networks(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    mock_boto3(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+
+    response = TestClient(app).get("/provider/networks")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "networks": [
             {
                 "id": "vpc-1",
+                "name": "default",
+                "type": "vpc",
                 "cidr": "10.0.0.0/16",
                 "state": "available",
                 "is_default": True,
             },
-        ],
-        "subnets": [
             {
                 "id": "subnet-1",
+                "name": "",
+                "type": "subnet",
                 "cidr": "10.0.1.0/24",
                 "state": "available",
                 "is_default": True,
+                "parent_id": "vpc-1",
             },
-        ],
+        ]
     }
 
 
