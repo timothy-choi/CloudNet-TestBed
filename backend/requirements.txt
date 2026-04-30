@@ -4,6 +4,8 @@ pydantic
 sqlmodel
 pytest
 httpx
+boto3
+botocore
 openstacksdk
 paramiko
 python-dotenv

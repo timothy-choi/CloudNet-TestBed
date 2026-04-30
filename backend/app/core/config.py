@@ -16,7 +16,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-SUPPORTED_PROVIDERS = {"openstack", "proxmox", "mock"}
+SUPPORTED_PROVIDERS = {"aws", "openstack", "proxmox", "mock"}
 
 
 def get_cloudnet_provider() -> str:
@@ -56,6 +56,17 @@ class ProxmoxSettings:
     node: str | None
 
 
+@dataclass(frozen=True)
+class AWSSettings:
+    region: str | None
+    access_key_id: str | None
+    secret_access_key: str | None
+    key_name: str | None
+    default_ami_id: str | None
+    default_instance_type: str
+    ssh_cidr: str
+
+
 def get_openstack_settings() -> OpenStackSettings:
     return OpenStackSettings(
         enabled=_env_bool("OPENSTACK_ENABLED", default=False),
@@ -77,4 +88,16 @@ def get_proxmox_settings() -> ProxmoxSettings:
         password=os.getenv("PROXMOX_PASSWORD"),
         verify_ssl=_env_bool("PROXMOX_VERIFY_SSL", default=False),
         node=os.getenv("PROXMOX_NODE"),
+    )
+
+
+def get_aws_settings() -> AWSSettings:
+    return AWSSettings(
+        region=os.getenv("AWS_REGION"),
+        access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        key_name=os.getenv("AWS_KEY_NAME"),
+        default_ami_id=os.getenv("AWS_DEFAULT_AMI_ID"),
+        default_instance_type=os.getenv("AWS_DEFAULT_INSTANCE_TYPE", "t3.micro"),
+        ssh_cidr=os.getenv("AWS_SSH_CIDR", "0.0.0.0/0"),
     )

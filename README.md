@@ -97,6 +97,7 @@ CloudNet selects infrastructure with `CLOUDNET_PROVIDER`.
 
 - OpenStack: `CLOUDNET_PROVIDER=openstack`
 - Proxmox: `CLOUDNET_PROVIDER=proxmox`
+- AWS: `CLOUDNET_PROVIDER=aws`
 - Mock: `CLOUDNET_PROVIDER=mock`
 
 If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when
@@ -139,6 +140,40 @@ curl http://localhost:8010/provider/health
 
 Initial Proxmox support is health and list operations only. VM creation is not
 implemented yet.
+
+## AWS Setup
+
+AWS is the practical real-infrastructure provider for the MVP. It can create a
+VPC, subnet, security group, and EC2 instances through the existing deploy flow.
+It does not create a NAT Gateway.
+
+Costs can start as soon as EC2 instances or other AWS resources are created.
+Use a low-cost region and instance type, keep topologies small, and clean up
+resources when you are done.
+
+Create or choose an IAM user with EC2 permissions, create an EC2 key pair, and
+choose an AMI ID in your region. Set these values in `.env`:
+
+```bash
+CLOUDNET_PROVIDER=aws
+AWS_REGION=us-west-2
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+AWS_KEY_NAME=your-ec2-keypair
+AWS_DEFAULT_AMI_ID=ami-0123456789abcdef0
+AWS_DEFAULT_INSTANCE_TYPE=t3.micro
+AWS_SSH_CIDR=203.0.113.10/32
+```
+
+`AWS_SSH_CIDR` controls SSH access to port `22`; set it to your public IP CIDR
+for normal use. The provider also allows ICMP between instances in the same
+CloudNet security group.
+
+Then start the backend and check the provider:
+
+```bash
+curl http://localhost:8010/provider/health
+```
 
 ## Local Development
 
