@@ -31,16 +31,20 @@ def client(tmp_path: Path) -> Generator[TestClient, None, None]:
         app.dependency_overrides.clear()
 
 
-def create_topology(client: TestClient) -> int:
+def create_topology(
+    client: TestClient,
+    nodes: list[dict[str, str]] | None = None,
+    links: list[dict[str, str]] | None = None,
+) -> int:
     response = client.post(
         "/topologies",
         json={
             "name": "deploy-test",
-            "nodes": [
+            "nodes": nodes or [
                 {"name": "client-a", "type": "host"},
                 {"name": "client-b", "type": "host"},
             ],
-            "links": [
+            "links": links or [
                 {"from": "client-a", "to": "client-b", "subnet": "10.20.1.0/24"},
             ],
         },
@@ -71,8 +75,31 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
             "network_id": network_id,
         }
 
-    monkeypatch.setattr(deployment_service.openstack_client, "create_network", create_network)
-    monkeypatch.setattr(deployment_service.openstack_client, "create_subnet", create_subnet)
+    def create_server(name: str, network_id: str) -> dict[str, Any]:
+        server_id = f"server-{name}"
+        calls.append(("server", {"name": name, "network_id": network_id}))
+        return {
+            "id": server_id,
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
+        }
+
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_network",
+        create_network,
+    )
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_subnet",
+        create_subnet,
+    )
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_server",
+        create_server,
+    )
 
     topology_id = create_topology(client)
     response = client.post(f"/topologies/{topology_id}/deploy")
@@ -88,6 +115,8 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
                 "name": "deploy-test-net-1-subnet",
                 "id": "subnet-1",
             },
+            {"type": "nova_server", "name": "client-a", "id": "server-client-a"},
+            {"type": "nova_server", "name": "client-b", "id": "server-client-b"},
         ],
     }
     assert calls == [
@@ -100,6 +129,8 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
                 "cidr": "10.20.1.0/24",
             },
         ),
+        ("server", {"name": "client-a", "network_id": "net-1"}),
+        ("server", {"name": "client-b", "network_id": "net-1"}),
     ]
 
 
@@ -120,6 +151,16 @@ def test_topology_status_becomes_active_on_success(
             "name": name,
             "cidr": cidr,
             "network_id": network_id,
+        },
+    )
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_server",
+        lambda name, network_id: {
+            "id": f"server-{name}",
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
         },
     )
 
@@ -178,6 +219,16 @@ def test_resources_endpoint_returns_saved_resources(
             "network_id": network_id,
         },
     )
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_server",
+        lambda name, network_id: {
+            "id": f"server-{name}",
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
+        },
+    )
 
     topology_id = create_topology(client)
     deploy_response = client.post(f"/topologies/{topology_id}/deploy")
@@ -206,6 +257,16 @@ def test_resources_endpoint_returns_saved_resources(
             "name": "deploy-test-net-1-subnet",
             "openstack_id": "subnet-1",
         },
+        {
+            "type": "nova_server",
+            "name": "client-a",
+            "openstack_id": "server-client-a",
+        },
+        {
+            "type": "nova_server",
+            "name": "client-b",
+            "openstack_id": "server-client-b",
+        },
     ]
 
 
@@ -225,6 +286,16 @@ def test_deploy_refuses_existing_resources(client: TestClient, monkeypatch) -> N
             "network_id": network_id,
         },
     )
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_server",
+        lambda name, network_id: {
+            "id": f"server-{name}",
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
+        },
+    )
 
     topology_id = create_topology(client)
     assert client.post(f"/topologies/{topology_id}/deploy").status_code == 200
@@ -237,3 +308,61 @@ def test_deploy_refuses_existing_resources(client: TestClient, monkeypatch) -> N
             "topology is already deployed; delete existing resources before redeploying"
         )
     }
+
+
+def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
+    server_calls: list[dict[str, str]] = []
+
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_network",
+        lambda name: {"id": "net-1", "name": name, "status": "ACTIVE"},
+    )
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_subnet",
+        lambda network_id, name, cidr: {
+            "id": "subnet-1",
+            "name": name,
+            "cidr": cidr,
+            "network_id": network_id,
+        },
+    )
+
+    def create_server(name: str, network_id: str) -> dict[str, Any]:
+        server_calls.append({"name": name, "network_id": network_id})
+        return {
+            "id": f"server-{name}",
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
+        }
+
+    monkeypatch.setattr(
+        deployment_service.openstack_client,
+        "create_server",
+        create_server,
+    )
+
+    topology_id = create_topology(
+        client,
+        nodes=[
+            {"name": "client-a", "type": "host"},
+            {"name": "router-a", "type": "router"},
+        ],
+        links=[
+            {"from": "client-a", "to": "router-a", "subnet": "10.20.1.0/24"},
+        ],
+    )
+
+    response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert response.status_code == 200
+    assert server_calls == [{"name": "client-a", "network_id": "net-1"}]
+    assert [
+        resource
+        for resource in response.json()["resources"]
+        if resource["type"] == "nova_server"
+    ] == [
+        {"type": "nova_server", "name": "client-a", "id": "server-client-a"},
+    ]

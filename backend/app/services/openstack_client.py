@@ -102,6 +102,15 @@ def _flavor_to_dict(flavor: Any) -> dict[str, Any]:
     }
 
 
+def _server_to_dict(server: Any) -> dict[str, Any]:
+    return {
+        "id": _resource_value(server, "id"),
+        "name": _resource_value(server, "name"),
+        "status": _resource_value(server, "status"),
+        "addresses": _resource_value(server, "addresses", {}),
+    }
+
+
 def _network_to_dict(network: Any) -> dict[str, Any]:
     return {
         "id": _resource_value(network, "id"),
@@ -167,3 +176,58 @@ def delete_network(network_id: str) -> None:
 def delete_subnet(subnet_id: str) -> None:
     connection = get_openstack_connection()
     connection.network.delete_subnet(subnet_id, ignore_missing=True)
+
+
+def get_default_image_id() -> str:
+    connection = get_openstack_connection()
+    return _get_default_image_id(connection)
+
+
+def _get_default_image_id(connection: Any) -> str:
+    images = list(connection.image.images())
+    if not images:
+        raise RuntimeError("No OpenStack images are available")
+    image = images[0]
+    image_id = _resource_value(image, "id")
+    if not image_id:
+        raise RuntimeError("Default OpenStack image has no id")
+    return image_id
+
+
+def get_default_flavor_id() -> str:
+    connection = get_openstack_connection()
+    return _get_default_flavor_id(connection)
+
+
+def _get_default_flavor_id(connection: Any) -> str:
+    flavors = list(connection.compute.flavors())
+    if not flavors:
+        raise RuntimeError("No OpenStack flavors are available")
+
+    flavor = min(flavors, key=lambda item: _resource_value(item, "ram", 0) or 0)
+    flavor_id = _resource_value(flavor, "id")
+    if not flavor_id:
+        raise RuntimeError("Default OpenStack flavor has no id")
+    return flavor_id
+
+
+def create_server(name: str, network_id: str) -> dict[str, Any]:
+    connection = get_openstack_connection()
+    server = connection.compute.create_server(
+        name=name,
+        image_id=_get_default_image_id(connection),
+        flavor_id=_get_default_flavor_id(connection),
+        networks=[{"uuid": network_id}],
+    )
+
+    try:
+        server = connection.compute.wait_for_server(server)
+    except Exception:
+        pass
+
+    return _server_to_dict(server)
+
+
+def delete_server(server_id: str) -> None:
+    connection = get_openstack_connection()
+    connection.compute.delete_server(server_id, ignore_missing=True)
