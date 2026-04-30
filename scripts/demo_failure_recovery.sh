@@ -123,6 +123,10 @@ create_body="$(jq -n \
   }'
 )"
 
+echo "DEBUG create_body:"
+printf '%s\n' "${create_body}" | jq .
+printf '%s' "${create_body}" | wc -c
+
 create_response="$(api_post "/topologies" "${create_body}")"
 ensure_no_api_error "${create_response}" "topology creation"
 
