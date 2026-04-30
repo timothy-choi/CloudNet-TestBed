@@ -1,0 +1,5 @@
+aws ec2 describe-instances \
+  --region us-west-2 \
+  --filters "Name=tag:Project,Values=CloudNet" \
+  --query "Reservations[].Instances[].{Id:InstanceId,State:State.Name,Name:Tags[?Key=='Name']|[0].Value,Vpc:VpcId,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress}" \
+  --output table

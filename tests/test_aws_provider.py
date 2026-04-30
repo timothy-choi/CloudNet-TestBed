@@ -22,8 +22,18 @@ class FakeAWS:
         self.clients: list[tuple[str, dict]] = []
         self.created_vpcs: list[dict] = []
         self.created_subnets: list[dict] = []
+        self.created_internet_gateways: list[str] = []
+        self.attached_internet_gateways: list[dict] = []
+        self.created_route_tables: list[str] = []
+        self.created_routes: list[dict] = []
+        self.route_table_associations: list[dict] = []
+        self.modified_subnets: list[dict] = []
         self.deleted_subnets: list[str] = []
         self.deleted_vpcs: list[str] = []
+        self.deleted_route_tables: list[str] = []
+        self.deleted_internet_gateways: list[str] = []
+        self.disassociated_route_tables: list[str] = []
+        self.detached_internet_gateways: list[str] = []
         self.tags: list[dict] = []
         self.waits: list[dict] = []
         self.instances: list[dict] = []
@@ -88,6 +98,31 @@ class FakeAWS:
                     "DefaultForAz": False,
                     "Tags": [{"Key": "Name", "Value": "cloudnet-test-subnet-b"}],
                 },
+            ],
+            "vpc-default": [],
+            "vpc-untagged": [],
+        }
+        self.route_tables_by_vpc: dict[str, list[dict]] = {
+            "vpc-created": [
+                {
+                    "RouteTableId": "rtb-created",
+                    "VpcId": "vpc-created",
+                    "Associations": [
+                        {"RouteTableAssociationId": "rtbassoc-created"}
+                    ],
+                    "Tags": [{"Key": "Project", "Value": "CloudNet"}],
+                }
+            ],
+            "vpc-default": [],
+            "vpc-untagged": [],
+        }
+        self.internet_gateways_by_vpc: dict[str, list[dict]] = {
+            "vpc-created": [
+                {
+                    "InternetGatewayId": "igw-created",
+                    "Attachments": [{"VpcId": "vpc-created"}],
+                    "Tags": [{"Key": "Project", "Value": "CloudNet"}],
+                }
             ],
             "vpc-default": [],
             "vpc-untagged": [],
@@ -171,6 +206,31 @@ class FakeEC2:
         self.fake_aws.created_subnets.append({"VpcId": VpcId, "CidrBlock": CidrBlock})
         return {"Subnet": {"SubnetId": "subnet-created", "CidrBlock": CidrBlock}}
 
+    def modify_subnet_attribute(self, **kwargs):
+        self.fake_aws.modified_subnets.append(kwargs)
+
+    def create_internet_gateway(self):
+        self.fake_aws.created_internet_gateways.append("igw-created")
+        return {"InternetGateway": {"InternetGatewayId": "igw-created"}}
+
+    def attach_internet_gateway(self, InternetGatewayId, VpcId):
+        self.fake_aws.attached_internet_gateways.append(
+            {"InternetGatewayId": InternetGatewayId, "VpcId": VpcId}
+        )
+
+    def create_route_table(self, VpcId):
+        self.fake_aws.created_route_tables.append(VpcId)
+        return {"RouteTable": {"RouteTableId": "rtb-created", "VpcId": VpcId}}
+
+    def create_route(self, **kwargs):
+        self.fake_aws.created_routes.append(kwargs)
+
+    def associate_route_table(self, RouteTableId, SubnetId):
+        self.fake_aws.route_table_associations.append(
+            {"RouteTableId": RouteTableId, "SubnetId": SubnetId}
+        )
+        return {"AssociationId": "rtbassoc-created"}
+
     def delete_subnet(self, SubnetId):
         self.fake_aws.deleted_subnets.append(SubnetId)
         self.fake_aws.operations.append(f"delete_subnet:{SubnetId}")
@@ -188,6 +248,7 @@ class FakeEC2:
                             {
                                 "InstanceId": InstanceIds[0],
                                 "PrivateIpAddress": "10.20.1.11",
+                                "PublicIpAddress": "198.51.100.10",
                             }
                         ]
                     }
@@ -235,6 +296,51 @@ class FakeEC2:
     def delete_security_group(self, GroupId):
         self.fake_aws.deleted_security_groups.append(GroupId)
         self.fake_aws.operations.append(f"delete_security_group:{GroupId}")
+
+    def describe_route_tables(self, Filters):
+        vpc_ids = []
+        for item in Filters:
+            if item.get("Name") == "vpc-id":
+                vpc_ids.extend(item.get("Values", []))
+        return {
+            "RouteTables": [
+                route_table
+                for vpc_id in vpc_ids
+                for route_table in self.fake_aws.route_tables_by_vpc.get(vpc_id, [])
+            ]
+        }
+
+    def disassociate_route_table(self, AssociationId):
+        self.fake_aws.disassociated_route_tables.append(AssociationId)
+        self.fake_aws.operations.append(f"disassociate_route_table:{AssociationId}")
+
+    def delete_route_table(self, RouteTableId):
+        self.fake_aws.deleted_route_tables.append(RouteTableId)
+        self.fake_aws.operations.append(f"delete_route_table:{RouteTableId}")
+
+    def describe_internet_gateways(self, Filters):
+        vpc_ids = []
+        for item in Filters:
+            if item.get("Name") == "attachment.vpc-id":
+                vpc_ids.extend(item.get("Values", []))
+        return {
+            "InternetGateways": [
+                internet_gateway
+                for vpc_id in vpc_ids
+                for internet_gateway in self.fake_aws.internet_gateways_by_vpc.get(
+                    vpc_id,
+                    [],
+                )
+            ]
+        }
+
+    def detach_internet_gateway(self, InternetGatewayId, VpcId):
+        self.fake_aws.detached_internet_gateways.append(InternetGatewayId)
+        self.fake_aws.operations.append(f"detach_internet_gateway:{InternetGatewayId}")
+
+    def delete_internet_gateway(self, InternetGatewayId):
+        self.fake_aws.deleted_internet_gateways.append(InternetGatewayId)
+        self.fake_aws.operations.append(f"delete_internet_gateway:{InternetGatewayId}")
 
     def create_tags(self, Resources, Tags):
         self.fake_aws.tags.append({"Resources": Resources, "Tags": Tags})
@@ -394,6 +500,9 @@ def test_provider_networks_post_creates_aws_vpc_and_subnet(monkeypatch) -> None:
             "name": "cloudnet-test-subnet",
             "cidr": "10.20.1.0/24",
             "vpc_id": "vpc-created",
+            "internet_gateway_id": "igw-created",
+            "route_table_id": "rtb-created",
+            "route_table_association_id": "rtbassoc-created",
         },
     }
     assert fake_aws.created_vpcs == [{"CidrBlock": "10.20.0.0/16"}]
@@ -442,6 +551,9 @@ def test_aws_creates_vpc_and_subnet(monkeypatch) -> None:
         "name": "cloudnet-subnet",
         "cidr": "10.0.1.0/24",
         "vpc_id": "vpc-created",
+        "internet_gateway_id": "igw-created",
+        "route_table_id": "rtb-created",
+        "route_table_association_id": "rtbassoc-created",
     }
     assert fake_aws.created_vpcs == [{"CidrBlock": "10.0.0.0/16"}]
     assert fake_aws.created_subnets == [
@@ -464,9 +576,44 @@ def test_aws_creates_vpc_and_subnet(monkeypatch) -> None:
                 {"Key": "ManagedBy", "Value": "CloudNet"},
             ],
         },
+        {
+            "Resources": ["igw-created"],
+            "Tags": [
+                {"Key": "Name", "Value": "cloudnet-subnet-igw"},
+                {"Key": "Project", "Value": "CloudNet"},
+                {"Key": "ManagedBy", "Value": "CloudNet"},
+            ],
+        },
+        {
+            "Resources": ["rtb-created"],
+            "Tags": [
+                {"Key": "Name", "Value": "cloudnet-subnet-rt"},
+                {"Key": "Project", "Value": "CloudNet"},
+                {"Key": "ManagedBy", "Value": "CloudNet"},
+            ],
+        },
     ]
     assert fake_aws.waits == [
         {"waiter_name": "vpc_available", "VpcIds": ["vpc-created"]}
+    ]
+    assert fake_aws.modified_subnets == [
+        {
+            "SubnetId": "subnet-created",
+            "MapPublicIpOnLaunch": {"Value": True},
+        }
+    ]
+    assert fake_aws.attached_internet_gateways == [
+        {"InternetGatewayId": "igw-created", "VpcId": "vpc-created"}
+    ]
+    assert fake_aws.created_routes == [
+        {
+            "RouteTableId": "rtb-created",
+            "DestinationCidrBlock": "0.0.0.0/0",
+            "GatewayId": "igw-created",
+        }
+    ]
+    assert fake_aws.route_table_associations == [
+        {"RouteTableId": "rtb-created", "SubnetId": "subnet-created"}
     ]
 
 
@@ -569,13 +716,21 @@ def test_aws_create_instance_runs_when_enabled(monkeypatch) -> None:
         "name": "client-a",
         "status": "pending",
         "private_ip": "10.20.1.10",
-        "public_ip": None,
+        "public_ip": "198.51.100.10",
         "security_group_id": "sg-created",
     }
     assert fake_aws.run_instances_params["ImageId"] == "ami-123"
     assert fake_aws.run_instances_params["InstanceType"] == "t3.micro"
-    assert fake_aws.run_instances_params["SubnetId"] == "subnet-a"
-    assert fake_aws.run_instances_params["SecurityGroupIds"] == ["sg-created"]
+    assert "SubnetId" not in fake_aws.run_instances_params
+    assert "SecurityGroupIds" not in fake_aws.run_instances_params
+    assert fake_aws.run_instances_params["NetworkInterfaces"] == [
+        {
+            "DeviceIndex": 0,
+            "SubnetId": "subnet-a",
+            "Groups": ["sg-created"],
+            "AssociatePublicIpAddress": True,
+        }
+    ]
     assert fake_aws.run_instances_params["KeyName"] == "cloudnet-key"
     assert fake_aws.ingress_permissions == [
         {
@@ -634,6 +789,8 @@ def test_provider_networks_delete_removes_subnets_before_vpc(monkeypatch) -> Non
         "deleted_subnets": ["subnet-a", "subnet-b"],
         "terminated_instances": [],
         "deleted_security_groups": [],
+        "deleted_route_tables": ["rtb-created"],
+        "deleted_internet_gateways": ["igw-created"],
     }
     assert fake_aws.deleted_subnets == ["subnet-a", "subnet-b"]
     assert fake_aws.deleted_vpcs == ["vpc-created"]
@@ -712,6 +869,8 @@ def test_provider_networks_delete_terminates_cloudnet_instances(monkeypatch) -> 
         "deleted_subnets": ["subnet-a", "subnet-b"],
         "terminated_instances": ["i-cloudnet"],
         "deleted_security_groups": ["sg-created"],
+        "deleted_route_tables": ["rtb-created"],
+        "deleted_internet_gateways": ["igw-created"],
     }
     assert fake_aws.terminated_instances == ["i-cloudnet"]
     assert fake_aws.waits == [
@@ -719,12 +878,18 @@ def test_provider_networks_delete_terminates_cloudnet_instances(monkeypatch) -> 
     ]
     assert fake_aws.deleted_subnets == ["subnet-a", "subnet-b"]
     assert fake_aws.deleted_security_groups == ["sg-created"]
+    assert fake_aws.deleted_route_tables == ["rtb-created"]
+    assert fake_aws.deleted_internet_gateways == ["igw-created"]
     assert fake_aws.deleted_vpcs == ["vpc-created"]
     assert fake_aws.operations == [
         "terminate_instance:i-cloudnet",
+        "delete_security_group:sg-created",
+        "disassociate_route_table:rtbassoc-created",
+        "delete_route_table:rtb-created",
+        "detach_internet_gateway:igw-created",
+        "delete_internet_gateway:igw-created",
         "delete_subnet:subnet-a",
         "delete_subnet:subnet-b",
-        "delete_security_group:sg-created",
         "delete_vpc:vpc-created",
     ]
 

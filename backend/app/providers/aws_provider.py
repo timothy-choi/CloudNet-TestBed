@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Any, NoReturn
 
@@ -143,6 +144,35 @@ class AWSProvider(BaseProvider):
                 Resources=[subnet_id],
                 Tags=self._resource_tags(name),
             )
+            ec2.modify_subnet_attribute(
+                SubnetId=subnet_id,
+                MapPublicIpOnLaunch={"Value": True},
+            )
+            internet_gateway = ec2.create_internet_gateway()["InternetGateway"]
+            internet_gateway_id = internet_gateway["InternetGatewayId"]
+            ec2.create_tags(
+                Resources=[internet_gateway_id],
+                Tags=self._resource_tags(f"{name}-igw"),
+            )
+            ec2.attach_internet_gateway(
+                InternetGatewayId=internet_gateway_id,
+                VpcId=network_id,
+            )
+            route_table = ec2.create_route_table(VpcId=network_id)["RouteTable"]
+            route_table_id = route_table["RouteTableId"]
+            ec2.create_tags(
+                Resources=[route_table_id],
+                Tags=self._resource_tags(f"{name}-rt"),
+            )
+            ec2.create_route(
+                RouteTableId=route_table_id,
+                DestinationCidrBlock="0.0.0.0/0",
+                GatewayId=internet_gateway_id,
+            )
+            route_table_association_id = ec2.associate_route_table(
+                RouteTableId=route_table_id,
+                SubnetId=subnet_id,
+            ).get("AssociationId")
         except self._client_error_class() as exc:
             raise RuntimeError(
                 f"AWS subnet creation failed: {self._error_detail(exc)}"
@@ -153,6 +183,9 @@ class AWSProvider(BaseProvider):
             "name": name,
             "cidr": cidr,
             "vpc_id": network_id,
+            "internet_gateway_id": internet_gateway_id,
+            "route_table_id": route_table_id,
+            "route_table_association_id": route_table_association_id,
         }
 
     def create_router(
@@ -190,8 +223,14 @@ class AWSProvider(BaseProvider):
                 "InstanceType": settings.default_instance_type,
                 "MinCount": 1,
                 "MaxCount": 1,
-                "SubnetId": target_subnet_id,
-                "SecurityGroupIds": [security_group_id],
+                "NetworkInterfaces": [
+                    {
+                        "DeviceIndex": 0,
+                        "SubnetId": target_subnet_id,
+                        "Groups": [security_group_id],
+                        "AssociatePublicIpAddress": True,
+                    }
+                ],
                 "TagSpecifications": [
                     {
                         "ResourceType": "instance",
@@ -201,8 +240,15 @@ class AWSProvider(BaseProvider):
             }
             if settings.key_name:
                 params["KeyName"] = settings.key_name
+            instance_profile_name = os.getenv("AWS_INSTANCE_PROFILE_NAME")
+            if instance_profile_name:
+                params["IamInstanceProfile"] = {"Name": instance_profile_name}
 
             instance = ec2.run_instances(**params)["Instances"][0]
+            public_ip = instance.get("PublicIpAddress") or self._wait_for_public_ip(
+                ec2=ec2,
+                instance_id=instance["InstanceId"],
+            )
         except self._client_error_class() as exc:
             raise RuntimeError(
                 f"AWS instance creation failed: {self._error_detail(exc)}"
@@ -213,7 +259,7 @@ class AWSProvider(BaseProvider):
             "name": name,
             "status": instance.get("State", {}).get("Name"),
             "private_ip": instance.get("PrivateIpAddress"),
-            "public_ip": instance.get("PublicIpAddress"),
+            "public_ip": public_ip,
             "security_group_id": security_group_id,
         }
 
@@ -251,6 +297,12 @@ class AWSProvider(BaseProvider):
             if instance_ids:
                 ec2.terminate_instances(InstanceIds=instance_ids)
                 ec2.get_waiter("instance_terminated").wait(InstanceIds=instance_ids)
+            deleted_security_groups = self._delete_cloudnet_security_groups(ec2, vpc_id)
+            deleted_route_tables = self._delete_cloudnet_route_tables(ec2, vpc_id)
+            deleted_internet_gateways = self._delete_cloudnet_internet_gateways(
+                ec2,
+                vpc_id,
+            )
             subnets = self._subnets_for_vpc(ec2, vpc_id)
             for subnet in subnets:
                 self._validate_cloudnet_resource(
@@ -265,7 +317,6 @@ class AWSProvider(BaseProvider):
                 self.delete_subnet(subnet_id)
                 deleted_subnets.append(subnet_id)
 
-            deleted_security_groups = self._delete_cloudnet_security_groups(ec2, vpc_id)
             ec2.delete_vpc(VpcId=vpc_id)
         except self._client_error_class() as exc:
             raise RuntimeError(
@@ -277,6 +328,8 @@ class AWSProvider(BaseProvider):
             "deleted_subnets": deleted_subnets,
             "terminated_instances": instance_ids,
             "deleted_security_groups": deleted_security_groups,
+            "deleted_route_tables": deleted_route_tables,
+            "deleted_internet_gateways": deleted_internet_gateways,
         }
 
     def max_instances_per_deploy(self) -> int:
@@ -384,6 +437,26 @@ class AWSProvider(BaseProvider):
             time.sleep(delay_seconds)
 
         raise RuntimeError("AWS SSM ping timed out waiting for command invocation")
+
+    def _wait_for_public_ip(
+        self,
+        ec2: Any,
+        instance_id: str,
+        max_attempts: int = 60,
+        delay_seconds: float = 1.0,
+    ) -> str | None:
+        for _ in range(max_attempts):
+            reservations = ec2.describe_instances(InstanceIds=[instance_id]).get(
+                "Reservations",
+                [],
+            )
+            for reservation in reservations:
+                for instance in reservation.get("Instances", []):
+                    public_ip = instance.get("PublicIpAddress")
+                    if public_ip:
+                        return str(public_ip)
+            time.sleep(delay_seconds)
+        return None
 
     def _validated_settings(self, require_default_ami: bool = True) -> AWSSettings:
         settings = get_aws_settings()
@@ -606,3 +679,39 @@ class AWSProvider(BaseProvider):
             ec2.delete_security_group(GroupId=group_id)
             deleted_security_groups.append(group_id)
         return deleted_security_groups
+
+    def _delete_cloudnet_route_tables(self, ec2: Any, vpc_id: str) -> list[str]:
+        route_tables = ec2.describe_route_tables(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+        ).get("RouteTables", [])
+        deleted_route_tables = []
+        for route_table in route_tables:
+            route_table_id = str(route_table.get("RouteTableId"))
+            if not self._is_cloudnet_resource(route_table.get("Tags", [])):
+                continue
+            for association in route_table.get("Associations", []):
+                if association.get("Main"):
+                    continue
+                association_id = association.get("RouteTableAssociationId")
+                if association_id:
+                    ec2.disassociate_route_table(AssociationId=association_id)
+            ec2.delete_route_table(RouteTableId=route_table_id)
+            deleted_route_tables.append(route_table_id)
+        return deleted_route_tables
+
+    def _delete_cloudnet_internet_gateways(self, ec2: Any, vpc_id: str) -> list[str]:
+        internet_gateways = ec2.describe_internet_gateways(
+            Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
+        ).get("InternetGateways", [])
+        deleted_internet_gateways = []
+        for internet_gateway in internet_gateways:
+            internet_gateway_id = str(internet_gateway.get("InternetGatewayId"))
+            if not self._is_cloudnet_resource(internet_gateway.get("Tags", [])):
+                continue
+            ec2.detach_internet_gateway(
+                InternetGatewayId=internet_gateway_id,
+                VpcId=vpc_id,
+            )
+            ec2.delete_internet_gateway(InternetGatewayId=internet_gateway_id)
+            deleted_internet_gateways.append(internet_gateway_id)
+        return deleted_internet_gateways

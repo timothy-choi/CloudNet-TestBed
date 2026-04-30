@@ -132,6 +132,33 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
             response_resources.append(deployment_summary_resource(subnet_resource))
 
             if is_aws:
+                _record_optional_aws_network_resource(
+                    session=session,
+                    topology_id=topology.id,
+                    resource_type="aws_internet_gateway",
+                    resource_name=f"{subnet_name}-igw",
+                    resource_id=subnet.get("internet_gateway_id"),
+                    created_resources=created_resources,
+                    response_resources=response_resources,
+                )
+                _record_optional_aws_network_resource(
+                    session=session,
+                    topology_id=topology.id,
+                    resource_type="aws_route_table",
+                    resource_name=f"{subnet_name}-rt",
+                    resource_id=subnet.get("route_table_id"),
+                    created_resources=created_resources,
+                    response_resources=response_resources,
+                )
+                _record_optional_aws_network_resource(
+                    session=session,
+                    topology_id=topology.id,
+                    resource_type="aws_route_table_association",
+                    resource_name=f"{subnet_name}-rt-assoc",
+                    resource_id=subnet.get("route_table_association_id"),
+                    created_resources=created_resources,
+                    response_resources=response_resources,
+                )
                 for node_name in network_plan["attached_nodes"]:
                     if node_name not in host_names or node_name in created_host_names:
                         continue
@@ -255,3 +282,28 @@ def _record_aws_server_resource(
     server_summary["private_ip"] = server.get("private_ip")
     server_summary["public_ip"] = server.get("public_ip")
     response_resources.append(server_summary)
+
+
+def _record_optional_aws_network_resource(
+    session: Session,
+    topology_id: int,
+    resource_type: str,
+    resource_name: str,
+    resource_id: str | None,
+    created_resources: list[DeploymentResource],
+    response_resources: list[dict[str, Any]],
+) -> None:
+    if not resource_id:
+        return
+
+    resource = DeploymentResource(
+        topology_id=topology_id,
+        resource_type=resource_type,
+        resource_name=resource_name,
+        openstack_id=resource_id,
+    )
+    session.add(resource)
+    session.commit()
+    session.refresh(resource)
+    created_resources.append(resource)
+    response_resources.append(deployment_summary_resource(resource))

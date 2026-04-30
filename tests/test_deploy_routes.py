@@ -402,6 +402,9 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
             "name": name,
             "cidr": cidr,
             "vpc_id": network_id,
+            "internet_gateway_id": "igw-1",
+            "route_table_id": "rtb-1",
+            "route_table_association_id": "rtbassoc-1",
         },
     )
 
@@ -415,7 +418,7 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
             "name": name,
             "status": "pending",
             "private_ip": f"10.20.1.{10 if name == 'client-a' else 11}",
-            "public_ip": None,
+            "public_ip": f"198.51.100.{10 if name == 'client-a' else 11}",
             "security_group_id": "sg-1",
         }
 
@@ -436,20 +439,35 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
                 "name": "deploy-test-net-1-subnet",
                 "id": "subnet-1",
             },
+            {
+                "type": "aws_internet_gateway",
+                "name": "deploy-test-net-1-subnet-igw",
+                "id": "igw-1",
+            },
+            {
+                "type": "aws_route_table",
+                "name": "deploy-test-net-1-subnet-rt",
+                "id": "rtb-1",
+            },
+            {
+                "type": "aws_route_table_association",
+                "name": "deploy-test-net-1-subnet-rt-assoc",
+                "id": "rtbassoc-1",
+            },
             {"type": "aws_security_group", "name": "cloudnet-sg", "id": "sg-1"},
             {
                 "type": "aws_instance",
                 "name": "client-a",
                 "id": "i-client-a",
                 "private_ip": "10.20.1.10",
-                "public_ip": None,
+                "public_ip": "198.51.100.10",
             },
             {
                 "type": "aws_instance",
                 "name": "client-b",
                 "id": "i-client-b",
                 "private_ip": "10.20.1.11",
-                "public_ip": None,
+                "public_ip": "198.51.100.11",
             },
         ],
     }
@@ -475,6 +493,21 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
             "type": "aws_subnet",
             "name": "deploy-test-net-1-subnet",
             "openstack_id": "subnet-1",
+        },
+        {
+            "type": "aws_internet_gateway",
+            "name": "deploy-test-net-1-subnet-igw",
+            "openstack_id": "igw-1",
+        },
+        {
+            "type": "aws_route_table",
+            "name": "deploy-test-net-1-subnet-rt",
+            "openstack_id": "rtb-1",
+        },
+        {
+            "type": "aws_route_table_association",
+            "name": "deploy-test-net-1-subnet-rt-assoc",
+            "openstack_id": "rtbassoc-1",
         },
         {
             "type": "aws_security_group",
