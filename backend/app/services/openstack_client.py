@@ -131,3 +131,39 @@ def list_networks() -> list[dict[str, Any]]:
     connection = get_openstack_connection()
     networks = connection.network.networks()
     return [_network_to_dict(network) for network in networks]
+
+
+def _subnet_to_dict(subnet: Any) -> dict[str, Any]:
+    return {
+        "id": _resource_value(subnet, "id"),
+        "name": _resource_value(subnet, "name"),
+        "cidr": _resource_value(subnet, "cidr"),
+        "network_id": _resource_value(subnet, "network_id"),
+    }
+
+
+def create_network(name: str) -> dict[str, Any]:
+    connection = get_openstack_connection()
+    network = connection.network.create_network(name=name)
+    return _network_to_dict(network)
+
+
+def create_subnet(network_id: str, name: str, cidr: str) -> dict[str, Any]:
+    connection = get_openstack_connection()
+    subnet = connection.network.create_subnet(
+        network_id=network_id,
+        name=name,
+        cidr=cidr,
+        ip_version=4,
+    )
+    return _subnet_to_dict(subnet)
+
+
+def delete_network(network_id: str) -> None:
+    connection = get_openstack_connection()
+    connection.network.delete_network(network_id, ignore_missing=True)
+
+
+def delete_subnet(subnet_id: str) -> None:
+    connection = get_openstack_connection()
+    connection.network.delete_subnet(subnet_id, ignore_missing=True)
