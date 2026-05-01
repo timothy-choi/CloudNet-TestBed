@@ -95,6 +95,25 @@ def cmd_workload(client: httpx.Client, args: argparse.Namespace) -> None:
     print(json.dumps(response.json(), indent=2))
 
 
+def load_scenario_yaml(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict):
+        sys.exit(f"Invalid scenario file {path}: expected a mapping")
+    for key in ("scenario", "topology", "steps"):
+        if key not in data:
+            sys.exit(f"Scenario file {path} must contain top-level key {key!r}")
+    return data
+
+
+def cmd_run(client: httpx.Client, args: argparse.Namespace) -> None:
+    path = Path(args.file)
+    body = load_scenario_yaml(path)
+    response = client.post("/scenarios/run", json=body)
+    if response.status_code >= 400:
+        sys.exit(f"scenario run failed: {response.status_code} {response.text}")
+    print(json.dumps(response.json(), indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cloudnet",
@@ -133,6 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_wl.add_argument("file", help="Topology YAML (matched by name)")
     p_wl.add_argument("--node", required=True, help="Target host node")
     p_wl.set_defaults(func=cmd_workload)
+
+    p_run = sub.add_parser(
+        "run",
+        help="Create topology, deploy, and execute a scenario file",
+    )
+    p_run.add_argument("file", help="Scenario YAML (scenario, topology, steps)")
+    p_run.set_defaults(func=cmd_run)
 
     return parser
 

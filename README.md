@@ -2,6 +2,10 @@
 
 CloudNet TestBed is a small **control plane** for describing network lab topologies, compiling deployment plans, provisioning provider resources (primarily **AWS**), running connectivity validation (ICMP via provider APIs), detecting **drift**, **reconciling** simple failures (for example stopped EC2 instances), and recording an **event timeline**. A **mock** provider exercises the same API flows without cloud credentials or billable resources—ideal for CI and local demos.
 
+### Test your system reliability on real cloud infrastructure
+
+CloudNet lets you define **failure scenarios** in YAML (desired topology plus ordered steps such as validate all links, stop a node, expect validation to fail, reconcile, expect validation to pass again). The API runs those steps sequentially using the same deploy, validate, failure injection, and reconcile paths as the interactive endpoints—no duplicate provisioning logic. Submit the scenario with **`POST /scenarios/run`**, or run **`./scripts/cloudnet run examples/backend-failure-scenario.yaml`** against a live API. With the mock provider and dev server running, try **`make demo-scenario`**.
+
 **Languages:** Python (FastAPI, topology compiler, providers), Bash (demos and smoke scripts). A Go-based test runner is reserved for a later milestone.
 
 ---
@@ -55,6 +59,14 @@ Run the **mock** control-plane loop (safe, no AWS credentials):
 CLOUDNET_PROVIDER=mock make dev
 # another terminal:
 make demo-mock
+```
+
+Run an **end-to-end reliability scenario** (creates topology, deploys, runs validate / fail / reconcile steps from `examples/backend-failure-scenario.yaml`):
+
+```bash
+CLOUDNET_PROVIDER=mock make dev
+# another terminal:
+make demo-scenario
 ```
 
 Run the **AWS** control-plane demo (creates real VPC/EC2 resources; costs money). The API process **must** use `CLOUDNET_PROVIDER=aws` with valid AWS credentials and instance creation allowed for the demo topology size:
@@ -396,6 +408,7 @@ Proxmox variables (`PROXMOX_HOST`, `PROXMOX_USER`, …) are documented in `.env.
 
 | Step | Endpoint |
 |------|----------|
+| Scenario run | `POST /scenarios/run` |
 | Plan | `GET /topologies/{id}/plan` |
 | Deploy | `POST /topologies/{id}/deploy` |
 | Validate | `POST /topologies/{id}/validate` |

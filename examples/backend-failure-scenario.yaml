@@ -1,0 +1,41 @@
+# Scenario: validate → inject backend failure → validate fails → reconcile → validate passes.
+# Run with mock provider: CLOUDNET_PROVIDER=mock ./scripts/cloudnet run examples/backend-failure-scenario.yaml
+
+scenario:
+  name: backend_failure_test
+
+topology:
+  name: scenario-backend-failure-demo
+  nodes:
+    - name: frontend
+      type: host
+    - name: backend
+      type: host
+    - name: db
+      type: host
+  links:
+    - from: frontend
+      to: backend
+      subnet: 10.131.1.0/24
+    - from: backend
+      to: db
+      subnet: 10.131.2.0/24
+  firewall_rules:
+    - name: allow-frontend-backend-ping
+      protocol: icmp
+      from: frontend
+      to: backend
+    - name: allow-backend-db-ping
+      protocol: icmp
+      from: backend
+      to: db
+
+steps:
+  - validate: all
+  - fail:
+      node: backend
+  - validate:
+      expect: fail
+  - reconcile: true
+  - validate:
+      expect: pass
