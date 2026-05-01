@@ -12,6 +12,7 @@ from app.services.connectivity_service import (
     create_ping_test,
     list_connectivity_tests,
     serialize_connectivity_test,
+    validate_topology_links,
 )
 from app.services.control_plane_service import (
     ControlPlaneError,
@@ -236,28 +237,10 @@ def validate_topology_endpoint(
     if topology is None:
         raise HTTPException(status_code=404, detail="topology not found")
 
-    host_names = {node.name for node in topology.nodes if node.type == "host"}
-    if not {"client-a", "client-b"}.issubset(host_names):
-        raise HTTPException(
-            status_code=400,
-            detail="validation requires host nodes 'client-a' and 'client-b'",
-        )
-
     try:
-        test = create_ping_test(
-            session=session,
-            topology=topology,
-            source="client-a",
-            target="client-b",
-        )
+        return validate_topology_links(session=session, topology=topology)
     except ConnectivityTestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    status = "PASSED" if test.status == "PASSED" else "FAILED"
-    return {
-        "topology_id": topology_id,
-        "status": status,
-    }
 
 
 @router.post("/{topology_id}/failures/node-down")

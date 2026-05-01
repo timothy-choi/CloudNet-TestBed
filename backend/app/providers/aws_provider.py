@@ -148,16 +148,22 @@ class AWSProvider(BaseProvider):
                 SubnetId=subnet_id,
                 MapPublicIpOnLaunch={"Value": True},
             )
-            internet_gateway = ec2.create_internet_gateway()["InternetGateway"]
-            internet_gateway_id = internet_gateway["InternetGatewayId"]
-            ec2.create_tags(
-                Resources=[internet_gateway_id],
-                Tags=self._resource_tags(f"{name}-igw"),
-            )
-            ec2.attach_internet_gateway(
-                InternetGatewayId=internet_gateway_id,
-                VpcId=network_id,
-            )
+            internet_gateways = ec2.describe_internet_gateways(
+                Filters=[{"Name": "attachment.vpc-id", "Values": [network_id]}]
+            ).get("InternetGateways", [])
+            if internet_gateways:
+                internet_gateway_id = internet_gateways[0]["InternetGatewayId"]
+            else:
+                internet_gateway = ec2.create_internet_gateway()["InternetGateway"]
+                internet_gateway_id = internet_gateway["InternetGatewayId"]
+                ec2.create_tags(
+                    Resources=[internet_gateway_id],
+                    Tags=self._resource_tags(f"{name}-igw"),
+                )
+                ec2.attach_internet_gateway(
+                    InternetGatewayId=internet_gateway_id,
+                    VpcId=network_id,
+                )
             route_table = ec2.create_route_table(VpcId=network_id)["RouteTable"]
             route_table_id = route_table["RouteTableId"]
             ec2.create_tags(

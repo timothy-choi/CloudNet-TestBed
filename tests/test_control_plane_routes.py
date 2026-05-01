@@ -1,6 +1,5 @@
 from collections.abc import Generator
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -75,6 +74,27 @@ def create_topology(client: TestClient) -> int:
     return response.json()["id"]
 
 
+def create_three_tier_topology(client: TestClient) -> int:
+    response = client.post(
+        "/topologies",
+        json={
+            "name": "three-tier-app",
+            "nodes": [
+                {"name": "frontend", "type": "host"},
+                {"name": "backend", "type": "host"},
+                {"name": "db", "type": "host"},
+            ],
+            "links": [
+                {"from": "frontend", "to": "backend", "subnet": "10.100.1.0/24"},
+                {"from": "backend", "to": "db", "subnet": "10.100.2.0/24"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
 def seed_aws_instance_resources(topology_id: int) -> None:
     session_override = app.dependency_overrides[get_session]
     session_generator = session_override()
@@ -126,6 +146,31 @@ def test_plan_endpoint_compiles_without_calling_provider(
     }
 
 
+def test_plan_endpoint_creates_multiple_subnets_and_warning(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+    topology_id = create_three_tier_topology(client)
+
+    response = client.get(f"/topologies/{topology_id}/plan")
+
+    assert response.status_code == 200
+    assert response.json()["plan"]["subnets"] == [
+        {"cidr": "10.100.1.0/24"},
+        {"cidr": "10.100.2.0/24"},
+    ]
+    assert response.json()["plan"]["instances"] == [
+        {"name": "frontend"},
+        {"name": "backend"},
+        {"name": "db"},
+    ]
+    assert response.json()["warnings"] == [
+        "multi-homed node backend appears in multiple links; "
+        "attached to first subnet only"
+    ]
+
+
 def test_reconcile_starts_stopped_instance_and_validates(
     client: TestClient,
     monkeypatch,
@@ -140,11 +185,9 @@ def test_reconcile_starts_stopped_instance_and_validates(
     monkeypatch.setattr(control_plane_service, "get_provider", lambda: provider)
     monkeypatch.setattr(
         control_plane_service,
-        "create_ping_test",
-        lambda session, topology, source, target: validation_calls.append(
-            (source, target)
-        )
-        or SimpleNamespace(status="PASSED"),
+        "validate_topology_links",
+        lambda session, topology: validation_calls.append(("client-a", "client-b"))
+        or {"topology_id": topology.id, "status": "PASSED", "results": []},
     )
 
     response = client.post(f"/topologies/{topology_id}/reconcile")
@@ -176,8 +219,12 @@ def test_reconcile_running_instance_takes_no_repair_action(
     monkeypatch.setattr(control_plane_service, "get_provider", lambda: provider)
     monkeypatch.setattr(
         control_plane_service,
-        "create_ping_test",
-        lambda session, topology, source, target: SimpleNamespace(status="PASSED"),
+        "validate_topology_links",
+        lambda session, topology: {
+            "topology_id": topology.id,
+            "status": "PASSED",
+            "results": [],
+        },
     )
 
     response = client.post(f"/topologies/{topology_id}/reconcile")
@@ -206,8 +253,12 @@ def test_reconcile_missing_instance_records_missing_action(
     monkeypatch.setattr(control_plane_service, "get_provider", lambda: provider)
     monkeypatch.setattr(
         control_plane_service,
-        "create_ping_test",
-        lambda session, topology, source, target: SimpleNamespace(status="FAILED"),
+        "validate_topology_links",
+        lambda session, topology: {
+            "topology_id": topology.id,
+            "status": "FAILED",
+            "results": [],
+        },
     )
 
     response = client.post(f"/topologies/{topology_id}/reconcile")

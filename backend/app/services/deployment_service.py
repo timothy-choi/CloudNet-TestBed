@@ -70,6 +70,26 @@ def compile_deployment_plan(topology: Topology) -> dict[str, Any]:
     return compile_topology(_topology_to_input(topology))
 
 
+def multi_homed_warnings(plan: dict[str, Any]) -> list[str]:
+    host_names = {
+        server["name"]
+        for server in plan["servers"]
+        if server["type"] == "host"
+    }
+    link_counts: dict[str, int] = {}
+    for network in plan["networks"]:
+        for node_name in network["attached_nodes"]:
+            if node_name in host_names:
+                link_counts[node_name] = link_counts.get(node_name, 0) + 1
+
+    return [
+        f"multi-homed node {node_name} appears in multiple links; "
+        "attached to first subnet only"
+        for node_name, count in sorted(link_counts.items())
+        if count > 1
+    ]
+
+
 def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
     if topology.id is None:
         raise DeploymentError("topology must be saved before deployment")
@@ -87,7 +107,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
     provider = get_provider()
     is_aws = provider.name == "aws"
     host_names = {node.name for node in topology.nodes if node.type == "host"}
-    created_host_names: set[str] = set()
+    warnings = multi_homed_warnings(plan)
 
     try:
         if is_aws:
@@ -99,96 +119,53 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
                     f"but AWS_MAX_INSTANCES_PER_DEPLOY is {max_instances}"
                 )
 
-        for network_plan in plan["networks"]:
-            network = provider.create_network(
-                name=network_plan["name"],
-                cidr=network_plan["subnet"],
-            )
-            network_ids_by_name[network_plan["name"]] = network["id"]
-            network_resource = DeploymentResource(
-                topology_id=topology.id,
-                resource_type="aws_vpc" if is_aws else "neutron_network",
-                resource_name=network["name"],
-                openstack_id=network["id"],
-            )
-            session.add(network_resource)
-            session.commit()
-            session.refresh(network_resource)
-            created_resources.append(network_resource)
-            response_resources.append(deployment_summary_resource(network_resource))
-
-            subnet_name = f"{network_plan['name']}-subnet"
-            subnet = provider.create_subnet(
-                network_id=network["id"],
-                name=subnet_name,
-                cidr=network_plan["subnet"],
-            )
-            subnet_resource = DeploymentResource(
-                topology_id=topology.id,
-                resource_type="aws_subnet" if is_aws else "neutron_subnet",
-                resource_name=subnet["name"],
-                openstack_id=subnet["id"],
-            )
-            session.add(subnet_resource)
-            session.commit()
-            session.refresh(subnet_resource)
-            created_resources.append(subnet_resource)
-            response_resources.append(deployment_summary_resource(subnet_resource))
-
-            if is_aws:
-                _record_optional_aws_network_resource(
-                    session=session,
-                    topology_id=topology.id,
-                    resource_type="aws_internet_gateway",
-                    resource_name=f"{subnet_name}-igw",
-                    resource_id=subnet.get("internet_gateway_id"),
-                    created_resources=created_resources,
-                    response_resources=response_resources,
-                )
-                _record_optional_aws_network_resource(
-                    session=session,
-                    topology_id=topology.id,
-                    resource_type="aws_route_table",
-                    resource_name=f"{subnet_name}-rt",
-                    resource_id=subnet.get("route_table_id"),
-                    created_resources=created_resources,
-                    response_resources=response_resources,
-                )
-                _record_optional_aws_network_resource(
-                    session=session,
-                    topology_id=topology.id,
-                    resource_type="aws_route_table_association",
-                    resource_name=f"{subnet_name}-rt-assoc",
-                    resource_id=subnet.get("route_table_association_id"),
-                    created_resources=created_resources,
-                    response_resources=response_resources,
-                )
-                for node_name in network_plan["attached_nodes"]:
-                    if node_name not in host_names or node_name in created_host_names:
-                        continue
-                    logger.debug("Creating EC2 instance for node %s", node_name)
-                    server = provider.create_server(
-                        name=node_name,
-                        network_id=network["id"],
-                        subnet_id=subnet["id"],
-                    )
-                    _record_aws_server_resource(
-                        session=session,
-                        topology_id=topology.id,
-                        server=server,
-                        created_resources=created_resources,
-                        response_resources=response_resources,
-                    )
-                    created_host_names.add(node_name)
-
-        if is_aws and created_host_names != host_names:
-            missing_hosts = ", ".join(sorted(host_names - created_host_names))
-            raise RuntimeError(
-                "AWS deployment could not place host nodes on a subnet: "
-                + missing_hosts
+            _deploy_aws_resources(
+                session=session,
+                topology=topology,
+                provider=provider,
+                plan=plan,
+                host_names=host_names,
+                created_resources=created_resources,
+                response_resources=response_resources,
             )
 
         if not is_aws:
+            for network_plan in plan["networks"]:
+                network = provider.create_network(
+                    name=network_plan["name"],
+                    cidr=network_plan["subnet"],
+                )
+                network_ids_by_name[network_plan["name"]] = network["id"]
+                network_resource = DeploymentResource(
+                    topology_id=topology.id,
+                    resource_type="neutron_network",
+                    resource_name=network["name"],
+                    openstack_id=network["id"],
+                )
+                session.add(network_resource)
+                session.commit()
+                session.refresh(network_resource)
+                created_resources.append(network_resource)
+                response_resources.append(deployment_summary_resource(network_resource))
+
+                subnet_name = f"{network_plan['name']}-subnet"
+                subnet = provider.create_subnet(
+                    network_id=network["id"],
+                    name=subnet_name,
+                    cidr=network_plan["subnet"],
+                )
+                subnet_resource = DeploymentResource(
+                    topology_id=topology.id,
+                    resource_type="neutron_subnet",
+                    resource_name=subnet["name"],
+                    openstack_id=subnet["id"],
+                )
+                session.add(subnet_resource)
+                session.commit()
+                session.refresh(subnet_resource)
+                created_resources.append(subnet_resource)
+                response_resources.append(deployment_summary_resource(subnet_resource))
+
             for server_plan in plan["servers"]:
                 if server_plan["type"] != "host":
                     continue
@@ -226,12 +203,118 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
     session.commit()
     session.refresh(topology)
 
-    return {
+    response = {
         "topology_id": topology.id,
         "status": topology.status,
         "resources": response_resources,
     }
+    if warnings:
+        response["warnings"] = warnings
+    return response
 
+
+def _deploy_aws_resources(
+    session: Session,
+    topology: Topology,
+    provider: Any,
+    plan: dict[str, Any],
+    host_names: set[str],
+    created_resources: list[DeploymentResource],
+    response_resources: list[dict[str, Any]],
+) -> None:
+    if not plan["networks"]:
+        raise RuntimeError("AWS deployment requires at least one link/subnet")
+
+    vpc_plan = plan["networks"][0]
+    network = provider.create_network(
+        name=vpc_plan["name"],
+        cidr="10.0.0.0/16",
+    )
+    network_resource = DeploymentResource(
+        topology_id=topology.id,
+        resource_type="aws_vpc",
+        resource_name=network["name"],
+        openstack_id=network["id"],
+    )
+    session.add(network_resource)
+    session.commit()
+    session.refresh(network_resource)
+    created_resources.append(network_resource)
+    response_resources.append(deployment_summary_resource(network_resource))
+
+    first_subnet_by_node: dict[str, str] = {}
+    for network_plan in plan["networks"]:
+        subnet_name = f"{network_plan['name']}-subnet"
+        subnet = provider.create_subnet(
+            network_id=network["id"],
+            name=subnet_name,
+            cidr=network_plan["subnet"],
+        )
+        subnet_resource = DeploymentResource(
+            topology_id=topology.id,
+            resource_type="aws_subnet",
+            resource_name=subnet["name"],
+            openstack_id=subnet["id"],
+        )
+        session.add(subnet_resource)
+        session.commit()
+        session.refresh(subnet_resource)
+        created_resources.append(subnet_resource)
+        response_resources.append(deployment_summary_resource(subnet_resource))
+
+        _record_optional_aws_network_resource(
+            session=session,
+            topology_id=topology.id,
+            resource_type="aws_internet_gateway",
+            resource_name=f"{subnet_name}-igw",
+            resource_id=subnet.get("internet_gateway_id"),
+            created_resources=created_resources,
+            response_resources=response_resources,
+        )
+        _record_optional_aws_network_resource(
+            session=session,
+            topology_id=topology.id,
+            resource_type="aws_route_table",
+            resource_name=f"{subnet_name}-rt",
+            resource_id=subnet.get("route_table_id"),
+            created_resources=created_resources,
+            response_resources=response_resources,
+        )
+        _record_optional_aws_network_resource(
+            session=session,
+            topology_id=topology.id,
+            resource_type="aws_route_table_association",
+            resource_name=f"{subnet_name}-rt-assoc",
+            resource_id=subnet.get("route_table_association_id"),
+            created_resources=created_resources,
+            response_resources=response_resources,
+        )
+
+        for node_name in network_plan["attached_nodes"]:
+            if node_name in host_names and node_name not in first_subnet_by_node:
+                first_subnet_by_node[node_name] = subnet["id"]
+
+    missing_hosts = host_names - set(first_subnet_by_node)
+    if missing_hosts:
+        raise RuntimeError(
+            "AWS deployment could not place host nodes on a subnet: "
+            + ", ".join(sorted(missing_hosts))
+        )
+
+    for node_name in sorted(host_names):
+        logger.debug("Creating EC2 instance for node %s", node_name)
+        server = provider.create_server(
+            name=node_name,
+            network_id=network["id"],
+            subnet_id=first_subnet_by_node[node_name],
+        )
+        _record_aws_server_resource(
+            session=session,
+            topology_id=topology.id,
+            server=server,
+            created_resources=created_resources,
+            response_resources=response_resources,
+        )
 
 def _network_id_for_node(
     node_name: str,
@@ -298,6 +381,8 @@ def _record_optional_aws_network_resource(
     response_resources: list[dict[str, Any]],
 ) -> None:
     if not resource_id:
+        return
+    if any(resource.openstack_id == resource_id for resource in created_resources):
         return
 
     resource = DeploymentResource(

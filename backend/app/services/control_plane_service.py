@@ -5,10 +5,14 @@ from sqlmodel import Session
 from app.core.config import get_cloudnet_provider
 from app.models import DeploymentResource, Topology
 from app.providers.factory import get_provider
-from app.services.connectivity_service import ConnectivityTestError, create_ping_test
+from app.services.connectivity_service import (
+    ConnectivityTestError,
+    validate_topology_links,
+)
 from app.services.deployment_service import (
     compile_deployment_plan,
     list_topology_resources,
+    multi_homed_warnings,
 )
 
 
@@ -28,7 +32,7 @@ def plan_topology(topology: Topology) -> dict[str, Any]:
         if server["type"] == "host"
     ]
 
-    return {
+    response = {
         "topology_id": topology.id,
         "provider": provider_name,
         "plan": {
@@ -45,6 +49,10 @@ def plan_topology(topology: Topology) -> dict[str, Any]:
             ],
         },
     }
+    warnings = multi_homed_warnings(compiled)
+    if warnings:
+        response["warnings"] = warnings
+    return response
 
 
 def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
@@ -116,20 +124,9 @@ def _aws_instance_resources(
 
 
 def _run_default_validation(session: Session, topology: Topology) -> str:
-    host_names = {node.name for node in topology.nodes if node.type == "host"}
-    if not {"client-a", "client-b"}.issubset(host_names):
-        raise ControlPlaneError(
-            "validation requires host nodes 'client-a' and 'client-b'"
-        )
-
     try:
-        test = create_ping_test(
-            session=session,
-            topology=topology,
-            source="client-a",
-            target="client-b",
-        )
+        validation = validate_topology_links(session=session, topology=topology)
     except ConnectivityTestError as exc:
         raise ControlPlaneError(str(exc)) from exc
 
-    return "PASSED" if test.status == "PASSED" else "FAILED"
+    return str(validation["status"])

@@ -557,3 +557,105 @@ def test_aws_deploy_enforces_max_instances_before_creating_resources(
         )
     }
     assert calls == []
+
+
+def test_aws_deploy_creates_subnet_per_link_and_uses_first_host_subnet(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    class AWSLikeProvider(MockProvider):
+        name = "aws"
+
+        def max_instances_per_deploy(self) -> int:
+            return 3
+
+    provider = AWSLikeProvider()
+    subnet_calls: list[dict[str, str]] = []
+    server_calls: list[dict[str, str | None]] = []
+    monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(
+        provider,
+        "create_network",
+        lambda name, cidr=None: {
+            "id": "vpc-1",
+            "name": name,
+            "cidr": cidr,
+            "state": "available",
+        },
+    )
+
+    def create_subnet(network_id: str, name: str, cidr: str) -> dict[str, str]:
+        subnet_id = f"subnet-{len(subnet_calls) + 1}"
+        subnet_calls.append({"network_id": network_id, "name": name, "cidr": cidr})
+        return {
+            "id": subnet_id,
+            "name": name,
+            "cidr": cidr,
+            "vpc_id": network_id,
+        }
+
+    def create_server(
+        name: str,
+        network_id: str,
+        subnet_id: str | None = None,
+    ) -> dict[str, str | None]:
+        server_calls.append(
+            {"name": name, "network_id": network_id, "subnet_id": subnet_id}
+        )
+        return {
+            "id": f"i-{name}",
+            "name": name,
+            "status": "pending",
+            "private_ip": None,
+            "public_ip": None,
+            "security_group_id": "sg-1",
+        }
+
+    monkeypatch.setattr(provider, "create_subnet", create_subnet)
+    monkeypatch.setattr(provider, "create_server", create_server)
+
+    topology_id = create_topology(
+        client,
+        nodes=[
+            {"name": "frontend", "type": "host"},
+            {"name": "backend", "type": "host"},
+            {"name": "db", "type": "host"},
+        ],
+        links=[
+            {"from": "frontend", "to": "backend", "subnet": "10.100.1.0/24"},
+            {"from": "backend", "to": "db", "subnet": "10.100.2.0/24"},
+        ],
+    )
+
+    response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert response.status_code == 200
+    assert subnet_calls == [
+        {
+            "network_id": "vpc-1",
+            "name": "deploy-test-net-1-subnet",
+            "cidr": "10.100.1.0/24",
+        },
+        {
+            "network_id": "vpc-1",
+            "name": "deploy-test-net-2-subnet",
+            "cidr": "10.100.2.0/24",
+        },
+    ]
+    assert server_calls == [
+        {"name": "backend", "network_id": "vpc-1", "subnet_id": "subnet-1"},
+        {"name": "db", "network_id": "vpc-1", "subnet_id": "subnet-2"},
+        {"name": "frontend", "network_id": "vpc-1", "subnet_id": "subnet-1"},
+    ]
+    assert [
+        resource
+        for resource in response.json()["resources"]
+        if resource["type"] == "aws_subnet"
+    ] == [
+        {"type": "aws_subnet", "name": "deploy-test-net-1-subnet", "id": "subnet-1"},
+        {"type": "aws_subnet", "name": "deploy-test-net-2-subnet", "id": "subnet-2"},
+    ]
+    assert response.json()["warnings"] == [
+        "multi-homed node backend appears in multiple links; "
+        "attached to first subnet only"
+    ]

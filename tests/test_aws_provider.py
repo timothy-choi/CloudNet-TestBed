@@ -608,14 +608,6 @@ def test_aws_creates_vpc_and_subnet(monkeypatch) -> None:
             ],
         },
         {
-            "Resources": ["igw-created"],
-            "Tags": [
-                {"Key": "Name", "Value": "cloudnet-subnet-igw"},
-                {"Key": "Project", "Value": "CloudNet"},
-                {"Key": "ManagedBy", "Value": "CloudNet"},
-            ],
-        },
-        {
             "Resources": ["rtb-created"],
             "Tags": [
                 {"Key": "Name", "Value": "cloudnet-subnet-rt"},
@@ -633,9 +625,7 @@ def test_aws_creates_vpc_and_subnet(monkeypatch) -> None:
             "MapPublicIpOnLaunch": {"Value": True},
         }
     ]
-    assert fake_aws.attached_internet_gateways == [
-        {"InternetGatewayId": "igw-created", "VpcId": "vpc-created"}
-    ]
+    assert fake_aws.attached_internet_gateways == []
     assert fake_aws.created_routes == [
         {
             "RouteTableId": "rtb-created",

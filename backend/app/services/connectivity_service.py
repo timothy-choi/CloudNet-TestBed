@@ -108,6 +108,43 @@ def create_ping_test(
     return test
 
 
+def validate_topology_links(
+    session: Session,
+    topology: Topology,
+) -> dict[str, Any]:
+    results: list[dict[str, str]] = []
+
+    for link in topology.links:
+        try:
+            test = create_ping_test(
+                session=session,
+                topology=topology,
+                source=link.from_node,
+                target=link.to_node,
+            )
+        except ConnectivityTestError as exc:
+            raise ConnectivityTestError(str(exc)) from exc
+
+        results.append(
+            {
+                "source": link.from_node,
+                "target": link.to_node,
+                "status": test.status,
+            }
+        )
+
+    overall_status = (
+        "PASSED"
+        if results and all(result["status"] == "PASSED" for result in results)
+        else "FAILED"
+    )
+    return {
+        "topology_id": topology.id,
+        "status": overall_status,
+        "results": results,
+    }
+
+
 def _host_node_by_name(topology: Topology, name: str) -> Node | None:
     for node in topology.nodes:
         if node.name == name and node.type == "host":

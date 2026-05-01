@@ -350,8 +350,14 @@ def test_validate_endpoint_runs_default_client_ping(
 ) -> None:
     monkeypatch.setattr(
         topology_routes,
-        "create_ping_test",
-        lambda session, topology, source, target: SimpleNamespace(status="PASSED"),
+        "validate_topology_links",
+        lambda session, topology: {
+            "topology_id": topology.id,
+            "status": "PASSED",
+            "results": [
+                {"source": "client-a", "target": "client-b", "status": "PASSED"},
+            ],
+        },
     )
     topology_id = create_topology(client)
 
@@ -361,6 +367,9 @@ def test_validate_endpoint_runs_default_client_ping(
     assert response.json() == {
         "topology_id": topology_id,
         "status": "PASSED",
+        "results": [
+            {"source": "client-a", "target": "client-b", "status": "PASSED"},
+        ],
     }
 
 
@@ -370,8 +379,14 @@ def test_validate_endpoint_returns_failed_when_ping_fails(
 ) -> None:
     monkeypatch.setattr(
         topology_routes,
-        "create_ping_test",
-        lambda session, topology, source, target: SimpleNamespace(status="FAILED"),
+        "validate_topology_links",
+        lambda session, topology: {
+            "topology_id": topology.id,
+            "status": "FAILED",
+            "results": [
+                {"source": "client-a", "target": "client-b", "status": "FAILED"},
+            ],
+        },
     )
     topology_id = create_topology(client)
 
@@ -381,7 +396,95 @@ def test_validate_endpoint_returns_failed_when_ping_fails(
     assert response.json() == {
         "topology_id": topology_id,
         "status": "FAILED",
+        "results": [
+            {"source": "client-a", "target": "client-b", "status": "FAILED"},
+        ],
     }
+
+
+def test_validate_endpoint_runs_ping_per_link(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def create_ping_test(session, topology, source, target):
+        calls.append((source, target))
+        return SimpleNamespace(status="PASSED")
+
+    monkeypatch.setattr(connectivity_service, "create_ping_test", create_ping_test)
+    response = client.post(
+        "/topologies",
+        json={
+            "name": "three-tier-app",
+            "nodes": [
+                {"name": "frontend", "type": "host"},
+                {"name": "backend", "type": "host"},
+                {"name": "db", "type": "host"},
+            ],
+            "links": [
+                {"from": "frontend", "to": "backend", "subnet": "10.100.1.0/24"},
+                {"from": "backend", "to": "db", "subnet": "10.100.2.0/24"},
+            ],
+        },
+    )
+    topology_id = response.json()["id"]
+
+    response = client.post(f"/topologies/{topology_id}/validate")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "topology_id": topology_id,
+        "status": "PASSED",
+        "results": [
+            {"source": "frontend", "target": "backend", "status": "PASSED"},
+            {"source": "backend", "target": "db", "status": "PASSED"},
+        ],
+    }
+    assert calls == [("frontend", "backend"), ("backend", "db")]
+
+
+def test_validate_endpoint_failed_link_makes_overall_failed(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    statuses = {
+        ("frontend", "backend"): "PASSED",
+        ("backend", "db"): "FAILED",
+    }
+
+    monkeypatch.setattr(
+        connectivity_service,
+        "create_ping_test",
+        lambda session, topology, source, target: SimpleNamespace(
+            status=statuses[(source, target)]
+        ),
+    )
+    response = client.post(
+        "/topologies",
+        json={
+            "name": "three-tier-app",
+            "nodes": [
+                {"name": "frontend", "type": "host"},
+                {"name": "backend", "type": "host"},
+                {"name": "db", "type": "host"},
+            ],
+            "links": [
+                {"from": "frontend", "to": "backend", "subnet": "10.100.1.0/24"},
+                {"from": "backend", "to": "db", "subnet": "10.100.2.0/24"},
+            ],
+        },
+    )
+    topology_id = response.json()["id"]
+
+    response = client.post(f"/topologies/{topology_id}/validate")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "FAILED"
+    assert response.json()["results"] == [
+        {"source": "frontend", "target": "backend", "status": "PASSED"},
+        {"source": "backend", "target": "db", "status": "FAILED"},
+    ]
 
 
 def test_validate_endpoint_unknown_topology_returns_404(client: TestClient) -> None:
