@@ -139,6 +139,49 @@ Runs can be persisted with **`topology_id`**, timestamps, total **`duration_ms`*
 
 ---
 
+## Safety and Production Readiness
+
+CloudNet is built for lab-style reliability experiments; these guardrails keep runs predictable and reduce accidental spend or leaked resources.
+
+### Resource quotas
+
+Before a scenario persists topology metadata or reaches deploy, the engine validates the compiled topology against **scenario quotas** (HTTP **400** with a clear message if exceeded):
+
+| Variable | Purpose |
+|----------|---------|
+| **`CLOUDNET_MAX_HOST_NODES_PER_SCENARIO`** | Upper bound on **`type: host`** nodes |
+| **`CLOUDNET_MAX_NETWORKS_PER_SCENARIO`** | Upper bound on compiled network segments (links) |
+| **`CLOUDNET_MAX_VPCS_PER_SCENARIO_RUN`** | Same segments cap framed for VPC-style providers |
+| **`CLOUDNET_MAX_SCENARIO_DURATION_SECONDS`** | Wall-clock guard during the run (quota steps if exceeded) |
+| **`CLOUDNET_MAX_SCENARIO_COST_RISK_UNITS`** | Proxy **hosts + network segments** for blast-radius budgeting |
+
+### Cleanup
+
+- **`scenario.cleanup_on_failure`**: When **true**, CloudNet attempts provider teardown after a **failed deploy step** or after the run finishes with **FAILED** (best-effort; failures are swallowed so the API still returns a report).
+- **`cleanup: true`** (top-level scenario payload, same as **`POST /scenarios/run`** body **`cleanup`**): Request teardown **after** the scenario completes (often paired with **`cleanup_on_failure`** for failure paths).
+- **CLI**: **`./scripts/cloudnet run … --cleanup`** sends the top-level **`cleanup`** flag.
+
+YAML mirrors the JSON API: optional **`scenario.cleanup_on_failure`** and optional top-level **`cleanup`**.
+
+### Structured logging
+
+The **`cloudnet.scenario`** logger emits **JSON lines** at INFO for step events and run completion. Each line includes **`scenario_run_id`**, **`topology_id`**, **`provider`**, **`action`**, **`status`**, and related fields so log aggregation can correlate runs without scraping unstructured text.
+
+### Config validation
+
+**`GET /config/validate`** returns **`ok`** and a list of checks: provider selected, AWS region and credentials when **`CLOUDNET_PROVIDER=aws`**, **`AWS_MAX_INSTANCES_PER_DEPLOY`** greater than zero, scenario quota env vars positive, and whether mock/non-AWS modes avoid requiring AWS credentials.
+
+### Mock mode and CI
+
+- **Mock provider** (**`CLOUDNET_PROVIDER=mock`**) runs the full scenario pipeline without billable cloud resources.
+- **CI** (for example **`.github/workflows/cloudnet-scenario.yml`**) starts the API in mock mode and runs **`cloudnet run`** on tracked YAML — **no AWS credentials** in the workflow.
+
+### AWS cost protections
+
+In addition to scenario quotas, AWS deploy paths honor **`AWS_MAX_INSTANCES_PER_DEPLOY`** and related settings from **`app/core/config.py`**. The cost-risk unit cap ties coarse topology size to configured limits without introducing new AWS services.
+
+---
+
 ## Architecture
 
 Under the hood, CloudNet keeps **desired state** (stored topology) separate from **actual state** (provider resource IDs after deploy). Drift compares them; reconcile repairs what the MVP supports.
@@ -175,10 +218,11 @@ Three required top-level keys and one optional block:
 
 | Key | Purpose |
 |-----|---------|
-| **`scenario`** | `name:` label for the experiment |
+| **`scenario`** | **`name:`** label; optional **`cleanup_on_failure: true`** (tear down resources after a failed deploy or failed run — see **Safety and Production Readiness**) |
 | **`topology`** | Same as standalone topology YAML (`name`, `nodes`, `links`, `firewall_rules`) |
 | **`steps`** | Ordered list; **each item is a single-key mapping** |
 | **`requirements`** *(optional)* | **`availability`**, **`latency`**, **`recovery`** thresholds (see **Non-functional validation**) |
+| **`cleanup`** *(optional)* | **`cleanup: true`** — after the scenario finishes, tear down deployment resources (same effect as a final **`cleanup`** step). Often used with **`scenario.cleanup_on_failure`**. CLI: **`cloudnet run --cleanup`**. |
 
 **Steps:**
 

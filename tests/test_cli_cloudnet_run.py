@@ -44,6 +44,10 @@ def scenario_file(tmp_path: Path) -> Path:
     return p
 
 
+def _run_args(scenario_file: Path) -> argparse.Namespace:
+    return argparse.Namespace(file=str(scenario_file), json=False, cleanup=False)
+
+
 def test_cmd_run_returns_zero_on_pass(scenario_file: Path) -> None:
     """Exit code 0 when POST /scenarios/run returns status PASSED (CI success)."""
     client = MagicMock()
@@ -56,8 +60,7 @@ def test_cmd_run_returns_zero_on_pass(scenario_file: Path) -> None:
         "topology_id": 1,
     }
     client.post.return_value = resp
-    args = argparse.Namespace(file=str(scenario_file), json=False)
-    assert cmd_run(client, args) == 0
+    assert cmd_run(client, _run_args(scenario_file)) == 0
 
 
 def test_cmd_run_returns_one_on_failed_scenario(scenario_file: Path) -> None:
@@ -67,11 +70,12 @@ def test_cmd_run_returns_one_on_failed_scenario(scenario_file: Path) -> None:
     resp.status_code = 200
     resp.json.return_value = {"status": "FAILED", "steps": [], "duration_ms": 1}
     client.post.return_value = resp
-    args = argparse.Namespace(file=str(scenario_file), json=False)
-    assert cmd_run(client, args) == 1
+    assert cmd_run(client, _run_args(scenario_file)) == 1
 
 
-def test_cmd_run_prints_compact_scenario_report(capsys: pytest.CaptureFixture[str], scenario_file: Path) -> None:
+def test_cmd_run_prints_compact_scenario_report(
+    capsys: pytest.CaptureFixture[str], scenario_file: Path,
+) -> None:
     client = MagicMock()
     resp = MagicMock()
     resp.status_code = 200
@@ -80,6 +84,7 @@ def test_cmd_run_prints_compact_scenario_report(capsys: pytest.CaptureFixture[st
         "status": "PASSED",
         "duration_ms": 2300,
         "topology_id": 1,
+        "scenario_run_id": 42,
         "steps": [
             {"name": "deploy", "action": "deploy", "status": "PASSED"},
             {"name": "validate", "action": "validate", "status": "PASSED", "actual": "PASSED"},
@@ -97,9 +102,10 @@ def test_cmd_run_prints_compact_scenario_report(capsys: pytest.CaptureFixture[st
         ],
     }
     client.post.return_value = resp
-    args = argparse.Namespace(file=str(scenario_file), json=False)
-    assert cmd_run(client, args) == 0
+    assert cmd_run(client, _run_args(scenario_file)) == 0
     out = capsys.readouterr().out
+    assert "scenario_run_id=42" in out
+    assert "topology_id=1" in out
     assert "Running scenario: backend_failure_test" in out
     assert "[1] Deploy topology ✔" in out
     assert "[2] Validate ✔ PASSED" in out
@@ -119,5 +125,4 @@ def test_cmd_run_returns_one_on_http_error(scenario_file: Path) -> None:
     resp.status_code = 400
     resp.text = "bad"
     client.post.return_value = resp
-    args = argparse.Namespace(file=str(scenario_file), json=False)
-    assert cmd_run(client, args) == 1
+    assert cmd_run(client, _run_args(scenario_file)) == 1

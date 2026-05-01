@@ -17,6 +17,7 @@ from app.services.scenario_service import (
 
 class ScenarioMeta(BaseModel):
     name: str
+    cleanup_on_failure: bool = False
 
 
 class ScenarioRunBody(BaseModel):
@@ -24,6 +25,7 @@ class ScenarioRunBody(BaseModel):
     topology: TopologyInput
     steps: list[Any] = Field(default_factory=list)
     requirements: dict[str, Any] | None = None
+    cleanup: bool = False
 
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -68,6 +70,8 @@ async def run_scenario_endpoint(
             topology_input=body.topology,
             raw_steps=body.steps,
             requirements=body.requirements,
+            cleanup_on_failure=body.scenario.cleanup_on_failure,
+            cleanup_after_run=body.cleanup,
         )
     except ScenarioError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

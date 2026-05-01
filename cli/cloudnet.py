@@ -196,6 +196,8 @@ def _print_requirements(body: dict) -> None:
 def _print_scenario_report(body: dict) -> None:
     scenario_name = body.get("scenario", "scenario")
     print(f"Running scenario: {scenario_name}")
+    if body.get("scenario_run_id") is not None:
+        print(f"scenario_run_id={body['scenario_run_id']}  topology_id={body.get('topology_id')}")
     print()
     steps = body.get("steps") or []
     for i, step in enumerate(steps, start=1):
@@ -211,6 +213,8 @@ def _print_scenario_report(body: dict) -> None:
 def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
     path = Path(args.file)
     body = load_scenario_yaml(path)
+    if getattr(args, "cleanup", False):
+        body["cleanup"] = True
     response = client.post("/scenarios/run", json=body)
     if response.status_code >= 400:
         print(
@@ -274,6 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print raw JSON instead of experiment report",
+    )
+    p_run.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Request deployment cleanup after the scenario run (API body cleanup: true)",
     )
     p_run.set_defaults(func=cmd_run)
 

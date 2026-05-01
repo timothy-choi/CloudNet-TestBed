@@ -36,6 +36,11 @@ from app.services.requirements_evaluation import (
 )
 from app.topology_compiler import compile_topology
 
+from app.core.config import get_scenario_quota_settings
+from app.providers.factory import get_provider
+from app.services.scenario_logging import log_scenario_structured
+from app.services.scenario_quotas import validate_scenario_topology_quotas
+
 
 class ScenarioError(Exception):
     pass
@@ -229,25 +234,47 @@ def _step_record(
     return rec
 
 
-def _persist_scenario_report(
+def _attempt_scenario_cleanup(session: Session, topology: Topology) -> None:
+    try:
+        cleanup_topology_deployment(session, topology)
+    except DeploymentError:
+        pass
+
+
+def _create_scenario_run_placeholder(
     session: Session,
     *,
     topology_id: int,
     scenario_name: str,
-    overall_status: str,
     started_at: Any,
-    finished_at: Any,
-    duration_ms: int,
-    step_dicts: list[dict[str, Any]],
 ) -> ScenarioRun:
     run = ScenarioRun(
         topology_id=topology_id,
         scenario_name=scenario_name,
-        status=overall_status,
+        status="RUNNING",
         started_at=started_at,
-        finished_at=finished_at,
-        duration_ms=duration_ms,
+        finished_at=started_at,
+        duration_ms=0,
     )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def _finalize_scenario_run(
+    session: Session,
+    run: ScenarioRun,
+    *,
+    finished_at: Any,
+    duration_ms: int,
+    overall_status: str,
+    step_dicts: list[dict[str, Any]],
+    scenario_name: str,
+) -> ScenarioRun:
+    run.status = overall_status
+    run.finished_at = finished_at
+    run.duration_ms = duration_ms
     session.add(run)
     session.flush()
     for i, s in enumerate(step_dicts):
@@ -269,7 +296,7 @@ def _persist_scenario_report(
     session.refresh(run)
     emit_event(
         session,
-        topology_id,
+        run.topology_id,
         "SCENARIO_RUN",
         overall_status,
         f"Scenario {scenario_name} finished with status {overall_status}",
@@ -366,8 +393,11 @@ class ScenarioRunner:
         topology_input: TopologyInput,
         raw_steps: list[Any],
         requirements_spec: ScenarioRequirementsSpec | None = None,
+        cleanup_on_failure: bool = False,
+        cleanup_after_run: bool = False,
     ) -> dict[str, Any]:
         session = self._session
+        validate_scenario_topology_quotas(topology_input)
         started_at = utc_now()
         t_run = time.perf_counter()
 
@@ -381,23 +411,105 @@ class ScenarioRunner:
         parsed = parse_scenario_steps(raw_steps)
         has_explicit_deploy = any(isinstance(s, _DeployStep) for s in parsed)
         topology = _persist_topology(session, topology_input)
-
-        if not has_explicit_deploy:
-            try:
-                deploy_topology(session, topology)
-            except DeploymentAlreadyExistsError as exc:
-                raise ScenarioError(str(exc)) from exc
-            except DeploymentError as exc:
-                raise ScenarioError(str(exc)) from exc
-
-        topology = _load_topology(session, topology.id)
-        topology_name = topology.name
         topology_id = topology.id
+        assert topology_id is not None
+
+        run = _create_scenario_run_placeholder(
+            session,
+            topology_id=topology_id,
+            scenario_name=scenario_name,
+            started_at=started_at,
+        )
+        scenario_run_id = run.id
+        provider_name = get_provider().name
+
+        topology = _load_topology(session, topology_id)
+        topology_name = topology.name
+
+        quota_settings = get_scenario_quota_settings()
 
         step_records: list[dict[str, Any]] = []
         overall_ok = True
+        abort_scenario = False
+
+        def push_step(rec: dict[str, Any]) -> None:
+            step_records.append(rec)
+            log_scenario_structured(
+                "scenario_step",
+                scenario_run_id=scenario_run_id,
+                topology_id=topology_id,
+                provider=provider_name,
+                action=rec.get("action"),
+                status=rec.get("status"),
+                name=rec.get("name"),
+                step_index=len(step_records) - 1,
+            )
+
+        if not has_explicit_deploy:
+            t_impl = time.perf_counter()
+            if time.perf_counter() - t_run > quota_settings.max_duration_seconds:
+                rec = _step_record(
+                    name="duration_quota",
+                    action="quota",
+                    expected="within_limit",
+                    actual="FAILED",
+                    step_passed=False,
+                    duration_ms=_elapsed_ms(t_impl),
+                    message=(
+                        "scenario duration quota exceeded before implicit deploy "
+                        f"(CLOUDNET_MAX_SCENARIO_DURATION_SECONDS="
+                        f"{quota_settings.max_duration_seconds})"
+                    ),
+                )
+                push_step(rec)
+                overall_ok = False
+                abort_scenario = True
+            else:
+                try:
+                    deploy_topology(session, topology)
+                except DeploymentAlreadyExistsError as exc:
+                    session.delete(run)
+                    session.commit()
+                    raise ScenarioError(str(exc)) from exc
+                except DeploymentError as exc:
+                    rec = _step_record(
+                        name="deploy",
+                        action="deploy",
+                        expected="ACTIVE",
+                        actual="FAILED",
+                        step_passed=False,
+                        duration_ms=_elapsed_ms(t_impl),
+                        message=str(exc),
+                    )
+                    push_step(rec)
+                    overall_ok = False
+                    abort_scenario = True
+                    if cleanup_on_failure:
+                        _attempt_scenario_cleanup(session, topology)
+                else:
+                    topology = _load_topology(session, topology_id)
 
         for step in parsed:
+            if abort_scenario:
+                break
+            if time.perf_counter() - t_run > quota_settings.max_duration_seconds:
+                t_step = time.perf_counter()
+                rec = _step_record(
+                    name="duration_quota",
+                    action="quota",
+                    expected="within_limit",
+                    actual="FAILED",
+                    step_passed=False,
+                    duration_ms=_elapsed_ms(t_step),
+                    message=(
+                        f"scenario exceeded CLOUDNET_MAX_SCENARIO_DURATION_SECONDS="
+                        f"{quota_settings.max_duration_seconds}"
+                    ),
+                )
+                push_step(rec)
+                overall_ok = False
+                abort_scenario = True
+                break
             t_step = time.perf_counter()
 
             if isinstance(step, _DeployStep):
@@ -416,7 +528,7 @@ class ScenarioRunner:
                     msg = str(exc)
 
                 topology = _load_topology(session, topology.id)
-                step_records.append(
+                push_step(
                     _step_record(
                         name="deploy",
                         action="deploy",
@@ -429,6 +541,9 @@ class ScenarioRunner:
                 )
                 if not ok:
                     overall_ok = False
+                    if cleanup_on_failure:
+                        _attempt_scenario_cleanup(session, topology)
+                    abort_scenario = True
 
             elif isinstance(step, _ValidateStep):
                 exp_label = _validate_expected_label(step.expect)
@@ -437,7 +552,7 @@ class ScenarioRunner:
                 except ConnectivityTestError as exc:
                     actual = "FAILED"
                     ok = _step_matches_validate(actual, step.expect)
-                    step_records.append(
+                    push_step(
                         _step_record(
                             name="validate",
                             action="validate",
@@ -459,7 +574,7 @@ class ScenarioRunner:
 
                 actual = str(response["status"])
                 ok = _step_matches_validate(actual, step.expect)
-                step_records.append(
+                push_step(
                     _step_record(
                         name="validate",
                         action="validate",
@@ -496,7 +611,7 @@ class ScenarioRunner:
                     ok = False
                     msg = str(exc)
 
-                step_records.append(
+                push_step(
                     _step_record(
                         name=name,
                         action="fail",
@@ -519,7 +634,7 @@ class ScenarioRunner:
                     drift = detect_topology_drift(session=session, topology=topology)
                     detected = bool(drift.get("drift_detected"))
                 except DriftError as exc:
-                    step_records.append(
+                    push_step(
                         _step_record(
                             name="drift",
                             action="drift",
@@ -535,7 +650,7 @@ class ScenarioRunner:
 
                 obs = "DETECTED" if detected else "CLEAN"
                 ok = obs == exp_drift
-                step_records.append(
+                push_step(
                     _step_record(
                         name="drift",
                         action="drift",
@@ -558,7 +673,7 @@ class ScenarioRunner:
                     response = reconcile_topology(session=session, topology=topology)
                     actual = str(response["status"])
                 except ControlPlaneError as exc:
-                    step_records.append(
+                    push_step(
                         _step_record(
                             name="reconcile",
                             action="reconcile",
@@ -573,7 +688,7 @@ class ScenarioRunner:
                     continue
 
                 ok = actual == "RECONCILED"
-                step_records.append(
+                push_step(
                     _step_record(
                         name="reconcile",
                         action="reconcile",
@@ -600,7 +715,7 @@ class ScenarioRunner:
                     msg = str(exc)
 
                 topology = _load_topology(session, topology.id)
-                step_records.append(
+                push_step(
                     _step_record(
                         name="cleanup",
                         action="cleanup",
@@ -632,16 +747,27 @@ class ScenarioRunner:
         duration_ms = int((time.perf_counter() - t_run) * 1000)
         overall_status = "PASSED" if overall_ok else "FAILED"
 
-        saved = _persist_scenario_report(
+        saved = _finalize_scenario_run(
             session,
-            topology_id=topology_id,
-            scenario_name=scenario_name,
-            overall_status=overall_status,
-            started_at=started_at,
+            run,
             finished_at=finished_at,
             duration_ms=duration_ms,
+            overall_status=overall_status,
             step_dicts=step_records,
+            scenario_name=scenario_name,
         )
+
+        log_scenario_structured(
+            "scenario_completed",
+            scenario_run_id=saved.id,
+            topology_id=topology_id,
+            provider=provider_name,
+            status=overall_status,
+            duration_ms=duration_ms,
+        )
+
+        if cleanup_after_run or (overall_status == "FAILED" and cleanup_on_failure):
+            _attempt_scenario_cleanup(session, topology)
 
         if req_report:
             for category, payload in req_report.items():
@@ -693,6 +819,8 @@ def run_scenario(
     topology_input: TopologyInput,
     raw_steps: list[Any],
     requirements: dict[str, Any] | None = None,
+    cleanup_on_failure: bool = False,
+    cleanup_after_run: bool = False,
 ) -> dict[str, Any]:
     spec = parse_requirements_dict(requirements)
     return ScenarioRunner(session).run(
@@ -700,4 +828,6 @@ def run_scenario(
         topology_input=topology_input,
         raw_steps=raw_steps,
         requirements_spec=spec,
+        cleanup_on_failure=cleanup_on_failure,
+        cleanup_after_run=cleanup_after_run,
     )

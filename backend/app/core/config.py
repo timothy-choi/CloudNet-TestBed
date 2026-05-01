@@ -115,3 +115,22 @@ def get_aws_settings() -> AWSSettings:
         max_instances_per_deploy=int(os.getenv("AWS_MAX_INSTANCES_PER_DEPLOY", "2")),
         ssh_allowed_cidr=os.getenv("AWS_SSH_ALLOWED_CIDR"),
     )
+
+
+@dataclass(frozen=True)
+class ScenarioQuotaSettings:
+    max_host_nodes: int
+    max_networks: int
+    max_vpcs_per_run: int
+    max_duration_seconds: int
+    max_cost_risk_units: int
+
+
+def get_scenario_quota_settings() -> ScenarioQuotaSettings:
+    return ScenarioQuotaSettings(
+        max_host_nodes=int(os.getenv("CLOUDNET_MAX_HOST_NODES_PER_SCENARIO", "16")),
+        max_networks=int(os.getenv("CLOUDNET_MAX_NETWORKS_PER_SCENARIO", "32")),
+        max_vpcs_per_run=int(os.getenv("CLOUDNET_MAX_VPCS_PER_SCENARIO_RUN", "32")),
+        max_duration_seconds=int(os.getenv("CLOUDNET_MAX_SCENARIO_DURATION_SECONDS", "7200")),
+        max_cost_risk_units=int(os.getenv("CLOUDNET_MAX_SCENARIO_COST_RISK_UNITS", "48")),
+    )
