@@ -319,3 +319,145 @@ def test_scenario_drift_expect_none_alias(client: TestClient, monkeypatch) -> No
     )
     assert response.status_code == 200
     assert response.json()["status"] == "PASSED"
+
+
+_NFR_TOPO = {
+    "name": "scenario-nfr",
+    "nodes": [
+        {"name": "client-a", "type": "host"},
+        {"name": "client-b", "type": "host"},
+    ],
+    "links": [{"from": "client-a", "to": "client-b", "subnet": "10.99.1.0/24"}],
+    "firewall_rules": [],
+}
+
+_NFR_STEPS = [
+    {"deploy": True},
+    {"validate": "all"},
+    {"fail": {"node": "client-b"}},
+    {"validate": {"expect": "fail"}},
+    {"drift": {"expect": "detected"}},
+    {"reconcile": True},
+    {"validate": {"expect": "pass"}},
+]
+
+
+def test_scenario_requirements_report_when_declared(
+    client: TestClient, monkeypatch,
+) -> None:
+    mock_stack(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_MOCK_PING_LOSS_RATE", "0")
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "nfr_declared"},
+            "topology": _NFR_TOPO,
+            "steps": _NFR_STEPS,
+            "requirements": {
+                "availability": {"min_success_rate": 0.5},
+                "latency": {"max_avg_ms": 500.0, "max_p95_ms": 500.0},
+                "recovery": {"max_recovery_seconds": 3600},
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "PASSED"
+    req = body["requirements"]
+    assert req["availability"]["status"] == "PASSED"
+    assert req["latency"]["status"] == "PASSED"
+    assert req["recovery"]["status"] == "PASSED"
+
+
+def test_scenario_requirements_latency_fails(client: TestClient, monkeypatch) -> None:
+    from app.providers.mock_provider import MockProvider
+
+    mock_stack(monkeypatch)
+
+    def slow_ping(self, source_server_id: str, target_ip: str) -> str:
+        lines = [
+            f"64 bytes from {target_ip}: icmp_seq={i + 1} ttl=64 time=800.00 ms"
+            for i in range(3)
+        ]
+        return "\n".join(lines)
+
+    monkeypatch.setattr(MockProvider, "run_ping", slow_ping)
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "nfr_lat"},
+            "topology": _NFR_TOPO,
+            "steps": _NFR_STEPS,
+            "requirements": {
+                "latency": {"max_avg_ms": 100.0, "max_p95_ms": 900.0},
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requirements"]["latency"]["status"] == "FAILED"
+    assert body["status"] == "FAILED"
+
+
+def test_scenario_requirements_availability_fails(
+    client: TestClient, monkeypatch,
+) -> None:
+    mock_stack(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_MOCK_PING_LOSS_RATE", "1")
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "nfr_avail"},
+            "topology": _NFR_TOPO,
+            "steps": _NFR_STEPS,
+            "requirements": {
+                "availability": {"min_success_rate": 0.95},
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requirements"]["availability"]["status"] == "FAILED"
+    assert body["status"] == "FAILED"
+
+
+def test_scenario_requirements_recovery_fails(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_MOCK_PING_LOSS_RATE", "0")
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "nfr_rec"},
+            "topology": _NFR_TOPO,
+            "steps": _NFR_STEPS,
+            "requirements": {
+                "recovery": {"max_recovery_seconds": 0},
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requirements"]["recovery"]["status"] == "FAILED"
+    assert body["status"] == "FAILED"
+
+
+def test_requirement_events_on_timeline(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+    monkeypatch.setenv("CLOUDNET_MOCK_PING_LOSS_RATE", "0")
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "nfr_events"},
+            "topology": _NFR_TOPO,
+            "steps": _NFR_STEPS,
+            "requirements": {
+                "availability": {"min_success_rate": 0.5},
+            },
+        },
+    )
+    assert response.status_code == 200
+    tid = response.json()["topology_id"]
+    ev = client.get(f"/topologies/{tid}/events")
+    assert ev.status_code == 200
+    types = [e["type"] for e in ev.json()["events"]]
+    assert "REQUIREMENT_EVALUATED" in types

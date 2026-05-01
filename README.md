@@ -90,6 +90,35 @@ The mock demo prints a compact timeline; scenario runs persist structured step r
 
 ---
 
+## Non-functional validation
+
+Scenarios may declare optional **`requirements`** so experiments gate on measurable reliability targets—not only on correct step outcomes.
+
+CloudNet evaluates:
+
+- **Availability** — success rate across ICMP connectivity checks (ping tests) aggregated over all **`validate`** steps.
+- **Latency** — average and **p95** latency computed from per-reply **`time=… ms`** values in ping output (Linux-style or mock).
+- **Recovery** — wall-clock time from **failure injection** to the **first passing validate** (expect **pass**) that runs **after** a successful **reconcile** following that failure.
+
+When **`requirements`** are present, overall **`PASSED`** requires every scenario step to pass **and** every stated threshold to be met. Results are returned under **`requirements`** in the **`POST /scenarios/run`** JSON and printed by the CLI after the numbered steps.
+
+Example:
+
+```yaml
+requirements:
+  availability:
+    min_success_rate: 0.95
+  latency:
+    max_avg_ms: 100
+    max_p95_ms: 250
+  recovery:
+    max_recovery_seconds: 120
+```
+
+The mock provider simulates variable latency and optional packet loss (see **`CLOUDNET_MOCK_PING_BASE_MS`**, **`CLOUDNET_MOCK_PING_JITTER_MS`**, **`CLOUDNET_MOCK_PING_LOSS_RATE`**). Events **`REQUIREMENT_EVALUATED`** and **`REQUIREMENT_FAILED`** are recorded on the topology event timeline when checks run.
+
+---
+
 ## Experiment reports
 
 Runs can be persisted with **`topology_id`**, timestamps, total **`duration_ms`**, and per-step **`expected`** / **`actual`** / **`status`**. **`GET /scenarios/{scenario_run_id}/results`** returns the saved report; **`GET /topologies/{id}/events`** lists the event timeline.
@@ -128,13 +157,14 @@ Use these when you need **raw HTTP**, **topology-only workflows**, **scenario fi
 
 ### Scenario file format (YAML)
 
-Three top-level keys:
+Three required top-level keys and one optional block:
 
 | Key | Purpose |
 |-----|---------|
 | **`scenario`** | `name:` label for the experiment |
 | **`topology`** | Same as standalone topology YAML (`name`, `nodes`, `links`, `firewall_rules`) |
 | **`steps`** | Ordered list; **each item is a single-key mapping** |
+| **`requirements`** *(optional)* | **`availability`**, **`latency`**, **`recovery`** thresholds (see **Non-functional validation**) |
 
 **Steps:**
 
@@ -149,7 +179,7 @@ Three top-level keys:
 
 Submit the same payload with **`POST /scenarios/run`** (JSON body, or YAML with **`Content-Type: application/x-yaml`**).
 
-Successful runs return **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, **`steps`**, **`event_timeline_url`**, and **`scenario_run_id`**; fetch persisted reports with **`GET /scenarios/{id}/results`**.
+Successful runs return **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, **`steps`**, **`event_timeline_url`**, **`scenario_run_id`**, and optionally **`requirements`**; fetch persisted reports with **`GET /scenarios/{id}/results`** (historical runs may omit **`requirements`** if not stored).
 
 ### Raw HTTP lifecycle
 

@@ -10,8 +10,8 @@ from app.db import get_session
 from app.schemas import TopologyInput
 from app.services.scenario_service import (
     ScenarioError,
-    ScenarioRunner,
     get_scenario_run_results,
+    run_scenario,
 )
 
 
@@ -23,6 +23,7 @@ class ScenarioRunBody(BaseModel):
     scenario: ScenarioMeta
     topology: TopologyInput
     steps: list[Any] = Field(default_factory=list)
+    requirements: dict[str, Any] | None = None
 
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -61,10 +62,12 @@ async def run_scenario_endpoint(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
     try:
-        return ScenarioRunner(session).run(
+        return run_scenario(
+            session,
             scenario_name=body.scenario.name,
             topology_input=body.topology,
             raw_steps=body.steps,
+            requirements=body.requirements,
         )
     except ScenarioError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

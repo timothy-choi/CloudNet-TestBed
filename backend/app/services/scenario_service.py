@@ -28,6 +28,12 @@ from app.services.deployment_service import (
 from app.services.drift_service import DriftError, detect_topology_drift
 from app.services.event_service import emit_event
 from app.services.failure_service import FailureError, inject_node_down
+from app.services.ping_metrics import mean_latency_ms, p95_latency_ms
+from app.services.requirements_evaluation import (
+    ScenarioRequirementsSpec,
+    evaluate_requirements,
+    parse_requirements_dict,
+)
 from app.topology_compiler import compile_topology
 
 
@@ -287,8 +293,9 @@ def scenario_result_response(
     finished_at: Any,
     duration_ms: int,
     steps: list[dict[str, Any]],
+    requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    body: dict[str, Any] = {
         "scenario": scenario_name,
         "scenario_run_id": scenario_run_id,
         "status": overall_status,
@@ -300,6 +307,9 @@ def scenario_result_response(
         "event_timeline_url": f"/topologies/{topology_id}/events",
         "steps": steps,
     }
+    if requirements is not None:
+        body["requirements"] = requirements
+    return body
 
 
 def get_scenario_run_results(session: Session, scenario_run_id: int) -> dict[str, Any] | None:
@@ -355,10 +365,18 @@ class ScenarioRunner:
         scenario_name: str,
         topology_input: TopologyInput,
         raw_steps: list[Any],
+        requirements_spec: ScenarioRequirementsSpec | None = None,
     ) -> dict[str, Any]:
         session = self._session
         started_at = utc_now()
         t_run = time.perf_counter()
+
+        agg_tests_total = 0
+        agg_tests_passed = 0
+        agg_latencies: list[float] = []
+        failure_perf: float | None = None
+        reconcile_after_failure = False
+        recovery_seconds: float | None = None
 
         parsed = parse_scenario_steps(raw_steps)
         has_explicit_deploy = any(isinstance(s, _DeployStep) for s in parsed)
@@ -434,6 +452,11 @@ class ScenarioRunner:
                         overall_ok = False
                     continue
 
+                metrics = response.get("metrics") or {}
+                agg_tests_total += int(metrics.get("tests_total") or 0)
+                agg_tests_passed += int(metrics.get("tests_passed") or 0)
+                agg_latencies.extend(metrics.get("reply_latencies_ms") or [])
+
                 actual = str(response["status"])
                 ok = _step_matches_validate(actual, step.expect)
                 step_records.append(
@@ -446,6 +469,14 @@ class ScenarioRunner:
                         duration_ms=_elapsed_ms(t_step),
                     )
                 )
+                if (
+                    actual == "PASSED"
+                    and step.expect == "pass"
+                    and failure_perf is not None
+                    and reconcile_after_failure
+                    and recovery_seconds is None
+                ):
+                    recovery_seconds = time.perf_counter() - failure_perf
                 if not ok:
                     overall_ok = False
 
@@ -477,6 +508,8 @@ class ScenarioRunner:
                         provider_action="stop_server",
                     )
                 )
+                if ok:
+                    failure_perf = time.perf_counter()
                 if not ok:
                     overall_ok = False
 
@@ -550,6 +583,8 @@ class ScenarioRunner:
                         duration_ms=_elapsed_ms(t_step),
                     )
                 )
+                if ok and failure_perf is not None:
+                    reconcile_after_failure = True
                 if not ok:
                     overall_ok = False
 
@@ -579,6 +614,20 @@ class ScenarioRunner:
                 if not ok:
                     overall_ok = False
 
+        avg_latency_ms = mean_latency_ms(agg_latencies) if agg_latencies else None
+        p95_latency_ms_computed = p95_latency_ms(agg_latencies) if agg_latencies else None
+
+        req_report, req_ok = evaluate_requirements(
+            requirements_spec,
+            tests_total=agg_tests_total,
+            tests_passed=agg_tests_passed,
+            avg_latency_ms=avg_latency_ms,
+            p95_latency_ms=p95_latency_ms_computed,
+            recovery_seconds=recovery_seconds,
+        )
+        if req_report is not None:
+            overall_ok = overall_ok and req_ok
+
         finished_at = utc_now()
         duration_ms = int((time.perf_counter() - t_run) * 1000)
         overall_status = "PASSED" if overall_ok else "FAILED"
@@ -594,6 +643,35 @@ class ScenarioRunner:
             step_dicts=step_records,
         )
 
+        if req_report:
+            for category, payload in req_report.items():
+                status = str(payload.get("status") or "")
+                emit_event(
+                    session,
+                    topology_id,
+                    "REQUIREMENT_EVALUATED",
+                    status,
+                    f"Requirement {category}: {status}",
+                    {
+                        "category": category,
+                        "scenario_run_id": saved.id,
+                        "detail": payload,
+                    },
+                )
+                if status != "PASSED":
+                    emit_event(
+                        session,
+                        topology_id,
+                        "REQUIREMENT_FAILED",
+                        "FAILED",
+                        f"Requirement {category} not met",
+                        {
+                            "category": category,
+                            "scenario_run_id": saved.id,
+                            "detail": payload,
+                        },
+                    )
+
         return scenario_result_response(
             scenario_name=scenario_name,
             scenario_run_id=saved.id,
@@ -604,6 +682,7 @@ class ScenarioRunner:
             finished_at=finished_at,
             duration_ms=duration_ms,
             steps=step_records,
+            requirements=req_report,
         )
 
 
@@ -613,9 +692,12 @@ def run_scenario(
     scenario_name: str,
     topology_input: TopologyInput,
     raw_steps: list[Any],
+    requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    spec = parse_requirements_dict(requirements)
     return ScenarioRunner(session).run(
         scenario_name=scenario_name,
         topology_input=topology_input,
         raw_steps=raw_steps,
+        requirements_spec=spec,
     )

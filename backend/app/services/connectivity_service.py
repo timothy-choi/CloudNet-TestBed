@@ -6,6 +6,11 @@ from app.models import ConnectivityTest, DeploymentResource, Node, Topology
 from app.providers.factory import get_provider
 from app.resource_types import INSTANCE_RESOURCE_TYPES
 from app.services.deployment_service import list_topology_resources
+from app.services.ping_metrics import (
+    extract_icmp_latencies_ms,
+    mean_latency_ms,
+    p95_latency_ms,
+)
 
 
 CIRROS_USERNAME = "cirros"
@@ -120,7 +125,7 @@ def validate_topology_links(
     session: Session,
     topology: Topology,
 ) -> dict[str, Any]:
-    results: list[dict[str, str]] = []
+    results: list[dict[str, Any]] = []
 
     if topology.firewall_rules:
         for rule in topology.firewall_rules:
@@ -140,11 +145,16 @@ def validate_topology_links(
                 source=rule.from_node,
                 target=rule.to_node,
             )
+            output = getattr(test, "output", "") or ""
+            reply_latencies_ms = (
+                extract_icmp_latencies_ms(output) if test.status == "PASSED" else []
+            )
             results.append(
                 {
                     "source": rule.from_node,
                     "target": rule.to_node,
                     "status": test.status,
+                    "reply_latencies_ms": reply_latencies_ms,
                 }
             )
 
@@ -153,11 +163,7 @@ def validate_topology_links(
             if any(result["status"] == "FAILED" for result in results)
             else "PASSED"
         )
-        return {
-            "topology_id": topology.id,
-            "status": overall_status,
-            "results": results,
-        }
+        return _validation_response_with_metrics(topology.id, overall_status, results)
 
     for link in topology.links:
         test = create_ping_test(
@@ -167,11 +173,16 @@ def validate_topology_links(
             target=link.to_node,
         )
 
+        output = getattr(test, "output", "") or ""
+        reply_latencies_ms = (
+            extract_icmp_latencies_ms(output) if test.status == "PASSED" else []
+        )
         results.append(
             {
                 "source": link.from_node,
                 "target": link.to_node,
                 "status": test.status,
+                "reply_latencies_ms": reply_latencies_ms,
             }
         )
 
@@ -180,10 +191,35 @@ def validate_topology_links(
         if results and all(result["status"] == "PASSED" for result in results)
         else "FAILED"
     )
+    return _validation_response_with_metrics(topology.id, overall_status, results)
+
+
+def _validation_response_with_metrics(
+    topology_id: int | None,
+    overall_status: str,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    counted = [r for r in results if r.get("status") != "SKIPPED"]
+    tests_total = len(counted)
+    tests_passed = sum(1 for r in counted if r["status"] == "PASSED")
+    tests_failed = tests_total - tests_passed
+    reply_latencies_ms: list[float] = []
+    for r in counted:
+        if r["status"] == "PASSED":
+            reply_latencies_ms.extend(r.get("reply_latencies_ms") or [])
+    metrics: dict[str, Any] = {
+        "tests_total": tests_total,
+        "tests_passed": tests_passed,
+        "tests_failed": tests_failed,
+        "reply_latencies_ms": reply_latencies_ms,
+        "avg_latency_ms": mean_latency_ms(reply_latencies_ms),
+        "p95_latency_ms": p95_latency_ms(reply_latencies_ms),
+    }
     return {
-        "topology_id": topology.id,
+        "topology_id": topology_id,
         "status": overall_status,
         "results": results,
+        "metrics": metrics,
     }
 
 

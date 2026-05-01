@@ -1,3 +1,5 @@
+import os
+import random
 from typing import Any
 
 from app.providers.base import BaseProvider
@@ -164,7 +166,18 @@ class MockProvider(BaseProvider):
             raise RuntimeError(
                 f"mock ping failed: source {source_server_id} is {source_status}"
             )
-        return "3 packets transmitted, 3 received"
+        loss_rate = float(os.environ.get("CLOUDNET_MOCK_PING_LOSS_RATE", "0"))
+        if random.random() < loss_rate:
+            raise RuntimeError("mock ping failed: simulated packet loss")
+        base_ms = float(os.environ.get("CLOUDNET_MOCK_PING_BASE_MS", "18"))
+        jitter_ms = float(os.environ.get("CLOUDNET_MOCK_PING_JITTER_MS", "4"))
+        lines = []
+        for i in range(3):
+            t_ms = base_ms + random.random() * jitter_ms + i * 0.15
+            lines.append(
+                f"64 bytes from {target_ip}: icmp_seq={i + 1} ttl=64 time={t_ms:.2f} ms"
+            )
+        return "\n".join(lines)
 
     def send_ssm_command(
         self,

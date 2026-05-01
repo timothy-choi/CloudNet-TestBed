@@ -153,6 +153,46 @@ def _scenario_step_one_liner(index: int, step: dict[str, object]) -> str:
     return f"[{index}] {name or action} {mark}"
 
 
+def _print_requirements(body: dict) -> None:
+    req = body.get("requirements")
+    if not req:
+        return
+    print()
+    print("Requirements:")
+    print()
+    for category, payload in req.items():
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("status") or "")
+        mark = "✔" if status == "PASSED" else "✖"
+        line = f"{mark} {category}: {status}"
+        detail = ""
+        if category == "availability":
+            sr = payload.get("success_rate")
+            th = payload.get("threshold")
+            detail = f" ({sr} >= {th})"
+        elif category == "latency":
+            parts: list[str] = []
+            if payload.get("max_avg_ms") is not None:
+                parts.append(
+                    f"avg {payload.get('avg_ms')}ms <= {payload['max_avg_ms']}ms"
+                )
+            if payload.get("max_p95_ms") is not None:
+                parts.append(
+                    f"p95 {payload.get('p95_ms')}ms <= {payload['max_p95_ms']}ms"
+                )
+            if parts:
+                detail = " (" + ", ".join(parts) + ")"
+        elif category == "recovery":
+            rs = payload.get("recovery_seconds")
+            mx = payload.get("max_recovery_seconds")
+            if rs is not None and mx is not None:
+                detail = f" ({rs}s <= {mx}s)"
+            else:
+                detail = " (not measured)"
+        print(f"{line}{detail}")
+
+
 def _print_scenario_report(body: dict) -> None:
     scenario_name = body.get("scenario", "scenario")
     print(f"Running scenario: {scenario_name}")
@@ -160,6 +200,7 @@ def _print_scenario_report(body: dict) -> None:
     steps = body.get("steps") or []
     for i, step in enumerate(steps, start=1):
         print(_scenario_step_one_liner(i, step))
+    _print_requirements(body)
     print()
     overall = body.get("status", "")
     print(f"Scenario {overall}")

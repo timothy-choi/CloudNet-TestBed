@@ -440,9 +440,27 @@ def test_validate_endpoint_runs_ping_per_link(
         "topology_id": topology_id,
         "status": "PASSED",
         "results": [
-            {"source": "frontend", "target": "backend", "status": "PASSED"},
-            {"source": "backend", "target": "db", "status": "PASSED"},
+            {
+                "source": "frontend",
+                "target": "backend",
+                "status": "PASSED",
+                "reply_latencies_ms": [],
+            },
+            {
+                "source": "backend",
+                "target": "db",
+                "status": "PASSED",
+                "reply_latencies_ms": [],
+            },
         ],
+        "metrics": {
+            "tests_total": 2,
+            "tests_passed": 2,
+            "tests_failed": 0,
+            "reply_latencies_ms": [],
+            "avg_latency_ms": None,
+            "p95_latency_ms": None,
+        },
     }
     assert calls == [("frontend", "backend"), ("backend", "db")]
 
@@ -485,8 +503,18 @@ def test_validate_endpoint_failed_link_makes_overall_failed(
     assert response.status_code == 200
     assert response.json()["status"] == "FAILED"
     assert response.json()["results"] == [
-        {"source": "frontend", "target": "backend", "status": "PASSED"},
-        {"source": "backend", "target": "db", "status": "FAILED"},
+        {
+            "source": "frontend",
+            "target": "backend",
+            "status": "PASSED",
+            "reply_latencies_ms": [],
+        },
+        {
+            "source": "backend",
+            "target": "db",
+            "status": "FAILED",
+            "reply_latencies_ms": [],
+        },
     ]
 
 
