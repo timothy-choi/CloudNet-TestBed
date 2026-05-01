@@ -57,13 +57,16 @@ CLOUDNET_PROVIDER=mock make dev
 make demo-mock
 ```
 
-Run the **AWS** control-plane demo (creates real VPC/EC2 resources; costs money):
+Run the **AWS** control-plane demo (creates real VPC/EC2 resources; costs money). The API process **must** use `CLOUDNET_PROVIDER=aws` with valid AWS credentials and instance creation allowed for the demo topology size:
 
 ```bash
-make dev
+CLOUDNET_PROVIDER=aws AWS_ALLOW_CREATE_INSTANCES=true make dev
+# another terminal (same provider/credentials implied by your .env):
 make check-api
 make demo-aws-control-plane
 ```
+
+`make check-api` calls `GET /provider/health` and requires **`connected: true`**. For AWS that means credentials and network reachability to EC2; for mock it always succeeds.
 
 Optional: destroy the demo VPC at the end of the AWS script:
 
@@ -147,10 +150,10 @@ Example response:
 
 ## Provider resource identifiers
 
-The database column remains `openstack_id` for backward compatibility. **API responses** expose:
+The database column remains `openstack_id` for backward compatibility. **API responses** list **`provider_resource_id` first**, then the legacy field:
 
-- **`provider_resource_id`** — canonical cloud resource identifier for the active provider.
-- **`openstack_id`** — same value, retained for older clients; prefer `provider_resource_id` for new integrations.
+- **`provider_resource_id`** — canonical cloud resource identifier for the active provider (prefer this in new code).
+- **`openstack_id`** — same value; retained for older clients only.
 
 ---
 
@@ -194,6 +197,8 @@ These are representative shapes from the API and demos (your IDs and counts will
 ```
 
 ### Drift (`GET /topologies/{id}/drift`)
+
+Drift item `resource_type` depends on the provider (for example `aws_instance` on AWS, `nova_server` with the mock provider).
 
 ```json
 {
@@ -308,6 +313,8 @@ Select infrastructure with `CLOUDNET_PROVIDER`:
 
 If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when `OPENSTACK_ENABLED=true`; otherwise **mock**.
 
+Copy `.env.example` to `.env` for local overrides. The example file defaults to **`OPENSTACK_ENABLED=false`** so a fresh copy keeps the **mock** provider unless you opt into OpenStack or set `CLOUDNET_PROVIDER` explicitly.
+
 ---
 
 ## Run locally (quick reference)
@@ -342,7 +349,13 @@ Run tests:
 make test
 ```
 
-CI runs `make ci` (compile check + tests) and `make demo-mock` against a live local API.
+Lint plus tests (same as CI unit/lint stage):
+
+```bash
+make ci
+```
+
+CI runs `make ci`, starts the API with `CLOUDNET_PROVIDER=mock`, waits for `/health`, then runs `make demo-mock`.
 
 ---
 
@@ -386,6 +399,10 @@ Proxmox variables (`PROXMOX_HOST`, `PROXMOX_USER`, …) are documented in `.env.
 | Plan | `GET /topologies/{id}/plan` |
 | Deploy | `POST /topologies/{id}/deploy` |
 | Validate | `POST /topologies/{id}/validate` |
+| Ping test | `POST /topologies/{id}/tests/ping` |
+| List connectivity tests | `GET /topologies/{id}/tests` |
+| Node failure | `POST /topologies/{id}/failures/node-down` |
+| Recover node | `POST /topologies/{id}/recover/node` |
 | Drift | `GET /topologies/{id}/drift` |
 | Reconcile | `POST /topologies/{id}/reconcile` |
 | Status | `GET /topologies/{id}/status` |
@@ -394,6 +411,13 @@ Proxmox variables (`PROXMOX_HOST`, `PROXMOX_USER`, …) are documented in `.env.
 | HTTP demo workload | `POST /topologies/{id}/workloads/http-demo` |
 | Resources | `GET /topologies/{id}/resources` |
 | Events | `GET /topologies/{id}/events` |
+| Failure history | `GET /topologies/{id}/failures` |
+| Terraform JSON | `GET /topologies/{id}/terraform` |
+| Terraform zip | `GET /topologies/{id}/terraform.zip` |
+| Provider health | `GET /provider/health` |
+| Provider networks | `GET /provider/networks` |
+| Create VPC (AWS) | `POST /provider/networks` |
+| Delete VPC (AWS) | `DELETE /provider/networks/{vpc_id}` |
 
 ---
 

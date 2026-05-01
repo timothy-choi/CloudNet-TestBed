@@ -4,7 +4,7 @@ PORT ?= 8010
 PYTHON ?= python3
 
 install:
-	pip install -r backend/requirements.txt
+	$(PYTHON) -m pip install -r backend/requirements.txt
 
 run:
 	./scripts/run_backend.sh 8010

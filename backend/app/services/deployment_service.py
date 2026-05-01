@@ -48,13 +48,14 @@ def _topology_to_input(topology: Topology) -> dict[str, Any]:
 
 
 def serialize_deployment_resource(resource: DeploymentResource) -> dict[str, Any]:
+    rid = resource.openstack_id
     return {
         "id": resource.id,
         "topology_id": resource.topology_id,
         "type": resource.resource_type,
         "name": resource.resource_name,
-        "openstack_id": resource.openstack_id,
-        "provider_resource_id": resource.openstack_id,
+        "provider_resource_id": rid,
+        "openstack_id": rid,
         "created_at": resource.created_at,
     }
 
@@ -64,8 +65,8 @@ def deployment_summary_resource(resource: DeploymentResource) -> dict[str, Any]:
     return {
         "type": resource.resource_type,
         "name": resource.resource_name,
-        "id": rid,
         "provider_resource_id": rid,
+        "id": rid,
     }
 
 
