@@ -137,6 +137,9 @@ def _print_scenario_report(body: dict) -> None:
         if action == "validate":
             print(f"  expected: {_display_validate_token(step.get('expected'))}")
             print(f"  actual: {_display_validate_token(step.get('actual'))}")
+        elif action == "deploy":
+            print(f"  expected: status {str(step.get('expected') or '').lower()}")
+            print(f"  actual: {str(step.get('actual') or '').lower()}")
         elif action == "fail":
             print(f"  action: {_provider_display(step.get('provider_action'))}")
         elif action == "drift":
@@ -157,10 +160,13 @@ def _print_scenario_report(body: dict) -> None:
     total_ms = int(body.get("duration_ms") or 0)
     print(f"Scenario {overall}")
     print(f"Total duration: {_fmt_step_duration(total_ms)}")
+    tid = body.get("topology_id")
+    base = api_base_url()
+    if tid is not None:
+        print(f"Event timeline: GET {base}/topologies/{tid}/events")
     rid = body.get("scenario_run_id")
     if rid is not None:
-        base = api_base_url()
-        print(f"Report: GET {base}/scenarios/{rid}/results")
+        print(f"Experiment report: GET {base}/scenarios/{rid}/results")
 
 
 def cmd_run(client: httpx.Client, args: argparse.Namespace) -> None:

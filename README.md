@@ -1,18 +1,59 @@
 # CloudNet Testbed
 
-CloudNet TestBed is a small **control plane** for describing network lab topologies, compiling deployment plans, provisioning provider resources (primarily **AWS**), running connectivity validation (ICMP via provider APIs), detecting **drift**, **reconciling** simple failures (for example stopped EC2 instances), and recording an **event timeline**. A **mock** provider exercises the same API flows without cloud credentials or billable resources—ideal for CI and local demos.
+CloudNet is a **reliability testing control plane** for cloud lab networks: describe a topology, run **declarative scenarios** (deploy, validate, inject failures, check drift, reconcile), and read structured experiment reports plus an **event timeline** per topology. The **mock** provider runs full flows without AWS; **AWS** targets real VPCs and instances.
 
-### Test your system reliability on real cloud infrastructure
+**Languages:** Python (FastAPI, topology compiler, providers), Bash (demos).
 
-See **[Run reliability experiments](#run-reliability-experiments)** for scenario YAML, the scenario API, and **`make demo-scenario`**.
+---
 
-**Languages:** Python (FastAPI, topology compiler, providers), Bash (demos and smoke scripts). A Go-based test runner is reserved for a later milestone.
+## Quick start — scenarios
+
+The primary workflow is one command while the API is running:
+
+```bash
+pip install -r backend/requirements.txt
+CLOUDNET_PROVIDER=mock make dev
+```
+
+In another terminal:
+
+```bash
+./scripts/cloudnet run examples/backend_failure.yaml
+```
+
+Use **`make demo-scenario`** for the same file with a short banner. Exit code **0** means the scenario **`PASSED`**.
+
+The JSON response includes **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, per-step results, **`event_timeline_url`** (path to **`GET /topologies/{id}/events`**), and **`scenario_run_id`** for **`GET /scenarios/{id}/results`**.
+
+---
+
+## Scenario YAML
+
+Three top-level keys:
+
+| Key | Purpose |
+|-----|---------|
+| **`scenario`** | `name:` label for the experiment |
+| **`topology`** | Same as standalone topology YAML (`name`, `nodes`, `links`, `firewall_rules`) |
+| **`steps`** | Ordered list; **each item is a single-key mapping** |
+
+**Steps:**
+
+| Key | Example | Notes |
+|-----|---------|--------|
+| **`deploy`** | `deploy: true` | Calls the same **`deploy_topology`** path as **`POST /topologies/{id}/deploy`**. If your scenario has **no** `deploy` step, CloudNet deploys once automatically before other steps (backward compatible). |
+| **`validate`** | `validate: all` or `validate: { expect: pass \| fail }` | Connectivity validation |
+| **`fail`** | `fail: { node: backend }` | Node-down / stop instance |
+| **`drift`** | `drift: { expect: detected \| clean }` | Drift detection vs expectation |
+| **`reconcile`** | `reconcile: true` | Same as **`POST /topologies/{id}/reconcile`** |
+
+Submit scenarios with **`POST /scenarios/run`** (JSON or YAML with `Content-Type: application/x-yaml`).
 
 ---
 
 ## Architecture
 
-CloudNet keeps **desired state** (stored topology: nodes, links, firewall rules) separate from **actual state** (provider resource IDs persisted after deploy). Drift compares them; reconcile repairs what the MVP supports.
+CloudNet keeps **desired state** (stored topology) separate from **actual state** (provider resource IDs after deploy). Drift compares them; reconcile repairs what the MVP supports.
 
 ```text
                     ┌─────────────────────────────────────────┐
@@ -36,109 +77,66 @@ CloudNet keeps **desired state** (stored topology: nodes, links, firewall rules)
 
 ---
 
-## Lifecycle (demo story)
+## Experiment reports
 
-This is the narrative the mock AWS demo (`make demo-mock`) and real AWS demo (`make demo-aws-control-plane`) follow:
-
-1. **Plan** — `GET /topologies/{id}/plan` compiles the stored topology into a provider-shaped plan (subnets, instances, rules) without creating infrastructure.
-2. **Deploy** — `POST /topologies/{id}/deploy` creates provider resources and records them in the database.
-3. **Validate** — `POST /topologies/{id}/validate` runs ICMP checks along links / firewall rules and records results.
-4. **Fail** — `POST /topologies/{id}/failures/node-down` stops an instance (or equivalent) to simulate failure.
-5. **Drift** — `GET /topologies/{id}/drift` compares desired topology to actual provider state (missing subnets, stopped instances, etc.).
-6. **Reconcile** — `POST /topologies/{id}/reconcile` runs drift detection, then repairs supported drift (for example starting stopped instances).
-7. **Validate** — Run validation again to confirm recovery.
-8. **Cleanup** — Terminate instances and delete the demo VPC when using real AWS (`DELETE /provider/networks/{vpc_id}` or `CLOUDNET_DEMO_CLEANUP=true` for the AWS demo script).
+Each run is persisted with **`topology_id`**, timestamps, total **`duration_ms`**, and per-step **`expected`** / **`actual`** / **`status`**. A **`SCENARIO_RUN`** event is emitted for **`GET /topologies/{id}/events`**. Retrieve the same JSON later with **`GET /scenarios/{scenario_run_id}/results`**.
 
 ---
 
-## Demo commands
+## Advanced usage
 
-Run the **mock** control-plane loop (safe, no AWS credentials):
+These flows call the same HTTP API that scenarios orchestrate internally—useful for debugging, scripting, or integrating without scenario YAML.
 
-```bash
-CLOUDNET_PROVIDER=mock make dev
-# another terminal:
-make demo-mock
-```
+### Raw HTTP lifecycle
 
-Run an **end-to-end reliability scenario** (creates topology, deploys, runs steps from `examples/backend_failure.yaml`):
+1. **Plan** — `GET /topologies/{id}/plan` — compile a provider-shaped plan without creating resources.
+2. **Deploy** — `POST /topologies/{id}/deploy` — create provider resources.
+3. **Validate** — `POST /topologies/{id}/validate` — ICMP checks on links / rules.
+4. **Fail** — `POST /topologies/{id}/failures/node-down` — simulate failure.
+5. **Drift** — `GET /topologies/{id}/drift` — desired vs actual.
+6. **Reconcile** — `POST /topologies/{id}/reconcile` — repair supported drift.
+7. **Validate** — confirm recovery.
+8. **Cleanup** — real AWS: `DELETE /provider/networks/{vpc_id}` or `CLOUDNET_DEMO_CLEANUP=true` on demo scripts.
 
-```bash
-CLOUDNET_PROVIDER=mock make dev
-# another terminal:
-make demo-scenario
-```
+### Demo scripts
 
-Run the **AWS** control-plane demo (creates real VPC/EC2 resources; costs money). The API process **must** use `CLOUDNET_PROVIDER=aws` with valid AWS credentials and instance creation allowed for the demo topology size:
+| Command | Purpose |
+|---------|---------|
+| `make demo-mock` | Mock control-plane walkthrough (after `CLOUDNET_PROVIDER=mock make dev`). |
+| `make demo-scenario` | Runs `./scripts/cloudnet run examples/backend_failure.yaml`. |
+| `make demo-aws-control-plane` | Real AWS resources (costs money); needs `CLOUDNET_PROVIDER=aws`, credentials, `make check-api`. Optional `CLOUDNET_DEMO_CLEANUP=true`. |
 
-```bash
-CLOUDNET_PROVIDER=aws AWS_ALLOW_CREATE_INSTANCES=true make dev
-# another terminal (same provider/credentials implied by your .env):
-make check-api
-make demo-aws-control-plane
-```
+### Interactive access on deployed nodes
 
-`make check-api` calls `GET /provider/health` and requires **`connected: true`**. For AWS that means credentials and network reachability to EC2; for mock it always succeeds.
+Once hosts exist and are reachable (AWS via **SSM**), you can inspect access metadata, run commands, and start a tiny HTTP demo workload.
 
-Optional: destroy the demo VPC at the end of the AWS script:
-
-```bash
-CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
-```
-
----
-
-## Run reliability experiments
-
-CloudNet lets you define **failure scenarios** and execute them as one unit on **real or mock** cloud environments—no manual chaining of deploy, validate, break, and reconcile calls.
-
-- **Scenario file** — top-level keys `scenario` (with `name`), `topology` (same shape as other topology YAML), and `steps`. Each step is a single-key mapping, for example `validate: all`, `validate: { expect: pass | fail }`, `fail: { node: backend }`, `drift: { expect: detected | clean }`, and `reconcile: true`.
-- **Engine** — **`POST /scenarios/run`** creates the topology, deploys it, then runs steps in order using the same services as **`POST .../validate`**, **`POST .../failures/node-down`**, **`GET .../drift`** (via `detect_topology_drift`), and **`POST .../reconcile`**. Each step records **`expected`**, **`actual`**, per-step **`status`** (**`PASSED`** / **`FAILED`**), and **`duration_ms`**. The overall response includes **`started_at`**, **`finished_at`**, **`duration_ms`**, and **`scenario_run_id`**. Request body may be **JSON** (default) or **YAML** with header `Content-Type: application/x-yaml`.
-- **CLI** — `./scripts/cloudnet run examples/backend_failure.yaml` prints an experiment-style report (steps with expected vs actual, durations, ✔/✖), total duration, and the report id; exits **0** if the scenario **`status`** is **`PASSED`**, otherwise **1**. Use **`--json`** for raw API output.
-
-### Experiment reports
-
-CloudNet persists each run as a structured **experiment report**: linked to **`topology_id`**, with **`scenario_run_id`**, wall-clock timestamps, total **`duration_ms`**, and per-step metrics (**`name`**, **`action`**, **`expected`**, **`actual`**, **`status`**, **`duration_ms`**, optional **`message`** / **`provider_action`**). A **`SCENARIO_RUN`** event is recorded on the topology timeline (see **`GET /topologies/{id}/events`**). Fetch the same payload later with **`GET /scenarios/{scenario_run_id}/results`**.
-
----
-
-## Using a deployed topology
-
-CloudNet is not only about provisioning—it is an **interactive testbed**. Once hosts are deployed and reachable (AWS via **SSM**), you can inspect access metadata, run shell commands on nodes, and start a minimal HTTP demo workload.
-
-### Safety and configuration
+#### Safety and configuration
 
 | Variable | Purpose |
 |----------|---------|
-| `CLOUDNET_ALLOW_EXEC` | Must be `true` to allow `POST .../exec` and `POST .../workloads/http-demo`. Default is off. |
-| `AWS_USE_SSM` | When `true` (default), AWS access summaries report SSM availability and include `ssm_exec` in `access_methods`. |
+| `CLOUDNET_ALLOW_EXEC` | Must be `true` for `POST .../exec` and `POST .../workloads/http-demo`. Default off. |
+| `AWS_USE_SSM` | When `true` (default), access summaries include SSM and `ssm_exec`. |
 
-Remote exec uses **AWS Systems Manager** (`AWS-RunShellScript`) with a **30 second** command timeout. Obvious destructive patterns are rejected (for example `rm -rf /`, `shutdown`, `reboot`, `mkfs`, fork bombs).
+Remote exec uses **AWS Systems Manager** with a **30 second** timeout; destructive patterns are rejected.
 
-### REST API
+#### REST API
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /topologies/{id}/access` | Instance IDs, private/public IPs, SSM availability, suggested access methods. |
-| `POST /topologies/{id}/nodes/{node}/exec` | Body: `{"command": "..."}` — run a shell command on the node’s instance. |
-| `POST /topologies/{id}/workloads/http-demo` | Body: `{"node": "..."}` — start `python3 -m http.server 8080` in the background via SSM. |
+| `GET /topologies/{id}/access` | IPs, SSM availability, access methods. |
+| `POST /topologies/{id}/nodes/{node}/exec` | `{"command": "..."}` |
+| `POST /topologies/{id}/workloads/http-demo` | `{"node": "..."}` — background `python3 -m http.server 8080`. |
 
-### CLI (`scripts/cloudnet`)
+#### CLI (topology workflows)
 
-Requires PyYAML (included in `backend/requirements.txt`). The CLI resolves the topology by matching the **`name`** field in your YAML against stored topologies (latest id wins if duplicates exist).
+The CLI matches YAML files to stored topologies by **`name`** (latest id wins if duplicated).
 
 ```bash
 pip install -r backend/requirements.txt
 
-# Create stored topology and deploy
 ./scripts/cloudnet apply examples/three-tier.yaml --deploy
 
-# Run a declarative reliability scenario (YAML: scenario + topology + steps)
-./scripts/cloudnet run examples/backend_failure.yaml
-
-# Allow exec on the API process
 export CLOUDNET_ALLOW_EXEC=true
-
 ./scripts/cloudnet access examples/three-tier.yaml
 ./scripts/cloudnet exec examples/three-tier.yaml frontend "hostname && ip -brief addr"
 ./scripts/cloudnet workload http-demo examples/three-tier.yaml --node frontend

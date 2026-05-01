@@ -1,5 +1,6 @@
-# Reliability scenario: validate → fail backend → validate fails → drift detected → reconcile → validate passes.
-# Run: CLOUDNET_PROVIDER=mock ./scripts/cloudnet run examples/backend_failure.yaml
+# Reliability scenario: deploy → validate → fail backend → validate fails → drift → reconcile → validate passes.
+# Primary workflow: ./scripts/cloudnet run examples/backend_failure.yaml
+# (with API up, e.g. CLOUDNET_PROVIDER=mock make dev)
 
 scenario:
   name: backend_failure_test
@@ -31,6 +32,7 @@ topology:
       to: db
 
 steps:
+  - deploy: true
   - validate: all
   - fail:
       node: backend

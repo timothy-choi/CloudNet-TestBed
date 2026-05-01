@@ -35,6 +35,11 @@ class ScenarioError(Exception):
 
 
 @dataclass(frozen=True)
+class _DeployStep:
+    pass
+
+
+@dataclass(frozen=True)
 class _ValidateStep:
     expect: str  # "pass" | "fail"
 
@@ -63,7 +68,12 @@ def parse_scenario_steps(raw_steps: list[Any]) -> list[Any]:
             )
         key = next(iter(raw))
         val = raw[key]
-        if key == "validate":
+        if key == "deploy":
+            if val is True:
+                out.append(_DeployStep())
+            else:
+                raise ScenarioError(f"steps[{index}] deploy must be true")
+        elif key == "validate":
             if val == "all":
                 out.append(_ValidateStep(expect="pass"))
             elif isinstance(val, dict):
@@ -274,6 +284,7 @@ def scenario_result_response(
         "duration_ms": duration_ms,
         "topology_id": topology_id,
         "topology_name": topology_name,
+        "event_timeline_url": f"/topologies/{topology_id}/events",
         "steps": steps,
     }
 
@@ -337,14 +348,16 @@ class ScenarioRunner:
         t_run = time.perf_counter()
 
         parsed = parse_scenario_steps(raw_steps)
+        has_explicit_deploy = any(isinstance(s, _DeployStep) for s in parsed)
         topology = _persist_topology(session, topology_input)
 
-        try:
-            deploy_topology(session, topology)
-        except DeploymentAlreadyExistsError as exc:
-            raise ScenarioError(str(exc)) from exc
-        except DeploymentError as exc:
-            raise ScenarioError(str(exc)) from exc
+        if not has_explicit_deploy:
+            try:
+                deploy_topology(session, topology)
+            except DeploymentAlreadyExistsError as exc:
+                raise ScenarioError(str(exc)) from exc
+            except DeploymentError as exc:
+                raise ScenarioError(str(exc)) from exc
 
         topology = _load_topology(session, topology.id)
         topology_name = topology.name
@@ -356,7 +369,37 @@ class ScenarioRunner:
         for step in parsed:
             t_step = time.perf_counter()
 
-            if isinstance(step, _ValidateStep):
+            if isinstance(step, _DeployStep):
+                try:
+                    dep = deploy_topology(session, topology)
+                    actual = str(dep.get("status", ""))
+                    ok = actual == "ACTIVE"
+                    msg = None
+                except DeploymentAlreadyExistsError as exc:
+                    actual = "FAILED"
+                    ok = False
+                    msg = str(exc)
+                except DeploymentError as exc:
+                    actual = "FAILED"
+                    ok = False
+                    msg = str(exc)
+
+                topology = _load_topology(session, topology.id)
+                step_records.append(
+                    _step_record(
+                        name="deploy",
+                        action="deploy",
+                        expected="ACTIVE",
+                        actual=actual,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_step),
+                        message=msg,
+                    )
+                )
+                if not ok:
+                    overall_ok = False
+
+            elif isinstance(step, _ValidateStep):
                 exp_label = _validate_expected_label(step.expect)
                 try:
                     response = validate_topology_links(session=session, topology=topology)
