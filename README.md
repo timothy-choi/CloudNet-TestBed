@@ -1,33 +1,48 @@
 # CloudNet Testbed
 
-CloudNet is a **reliability experiment runner** for cloud infrastructure. Describe a topology and an ordered **scenario** (deploy, validate, faults, drift, reconcile, optional cleanup); run one command and get a structured report plus the **event timeline** and persisted experiment record.
-
-**Primary command:**
-
-```bash
-./scripts/cloudnet run examples/backend-failure.yaml
-```
-
-Use **`CLOUDNET_PROVIDER=mock`** with **`make dev`** to run end-to-end **without AWS credentials**. The mock provider uses the same scenario engine as AWS.
+CloudNet is a reliability experiment runner for cloud network topologies. Users define a topology and failure scenario, then CloudNet plans, deploys, validates, injects failure, detects drift, reconciles recovery, and reports the result.
 
 **Languages:** Python (FastAPI, topology compiler, providers), Bash (demos).
 
 ---
 
-## Quick start — scenarios
+## Why use CloudNet?
+
+- **Test failure recovery** without manually wiring VPCs, subnets, security groups, and instances for every experiment.
+- **Validate cloud network connectivity** from declarative topology definitions (nodes, links, firewall rules).
+- **Reproduce reliability experiments locally** with mock mode—no cloud credentials or billable resources.
+- **Run the same experiment** against real AWS infrastructure when you are ready, using the same scenario engine.
+
+---
+
+## Quick Start: Run an experiment
+
+Install dependencies and start the API with the **mock** provider (no AWS credentials):
 
 ```bash
 pip install -r backend/requirements.txt
 CLOUDNET_PROVIDER=mock make dev
 ```
 
-In another terminal:
+In another terminal, run the interactive mock walkthrough:
+
+```bash
+CLOUDNET_PROVIDER=mock make demo-mock
+```
+
+That script drives the full reliability loop. The timeline it prints follows:
+
+```text
+PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
+```
+
+For a **declarative scenario** (YAML with topology + steps), run:
 
 ```bash
 ./scripts/cloudnet run examples/backend-failure.yaml
 ```
 
-Use **`make demo-scenario`** for the same example with a short banner. Exit code **0** means **`PASSED`**, **1** means **`FAILED`** or HTTP error.
+Or **`make demo-scenario`** for the same example with a short banner. Exit code **0** means **`PASSED`**, **1** means **`FAILED`** or HTTP error.
 
 The API returns **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, **`steps`**, **`event_timeline_url`**, and **`scenario_run_id`** (**`GET /scenarios/{id}/results`**).
 
@@ -58,9 +73,55 @@ Submit scenarios with **`POST /scenarios/run`** (JSON or YAML with `Content-Type
 
 ---
 
+## What users do with it
+
+- **Define a topology** — nodes, links, and optional firewall rules; optionally describe **scenario** steps (deploy, validate, fail a node, drift checks, reconcile, cleanup).
+- **Run an experiment** — **`POST /scenarios/run`** or **`./scripts/cloudnet run`** while the API is up.
+- **Review pass/fail reports** — per-step expectations, outcomes, and durations.
+- **Inspect drift and events** — topology timeline at **`GET /topologies/{id}/events`**; drift via API or scenario steps.
+- **Use AWS mode** for real VPCs and instances when you want production-like infrastructure under test.
+
+---
+
+## What CloudNet is not
+
+- **Not a Terraform replacement** — it can compile plans and export Terraform for inspection, but it is not a general-purpose IaC workflow engine.
+- **Not an AWS console wrapper** — it exposes a focused API and CLI for lab-style networks and experiments.
+- **Not a production orchestrator** — it does not replace Kubernetes, CI platforms, or fleet managers for running services at scale.
+- **It is a reliability testbed** — a control plane for defining intent, provisioning lab infrastructure, injecting faults, observing drift, reconciling where supported, and recording outcomes.
+
+---
+
+## Experiment lifecycle
+
+Whether you use **`make demo-mock`** or a **scenario YAML**, the narrative is the same pipeline:
+
+```text
+PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
+```
+
+- **Plan** — compile intent into a provider-shaped plan (no cloud resources yet).
+- **Deploy** — create subnets, instances, and rules from that plan.
+- **Validate** — check connectivity (for example ICMP along links / rules).
+- **Failure** — stop an instance or equivalent to simulate outage.
+- **Validate** — assert behavior under failure (for example connectivity fails where expected).
+- **Drift** — compare desired topology to actual provider state.
+- **Reconcile** — repair supported drift (for example start stopped instances).
+- **Validate** — confirm recovery.
+
+The mock demo prints a compact timeline; scenario runs persist structured step results and emit **`SCENARIO_RUN`** (and related) events on the topology timeline.
+
+---
+
+## Experiment reports
+
+Runs can be persisted with **`topology_id`**, timestamps, total **`duration_ms`**, and per-step **`expected`** / **`actual`** / **`status`**. **`GET /scenarios/{scenario_run_id}/results`** returns the saved report; **`GET /topologies/{id}/events`** lists the event timeline.
+
+---
+
 ## Architecture
 
-CloudNet keeps **desired state** (stored topology) separate from **actual state** (provider resource IDs after deploy). Drift compares them; reconcile repairs what the MVP supports.
+Under the hood, CloudNet keeps **desired state** (stored topology) separate from **actual state** (provider resource IDs after deploy). Drift compares them; reconcile repairs what the MVP supports.
 
 ```text
                     ┌─────────────────────────────────────────┐
@@ -84,15 +145,9 @@ CloudNet keeps **desired state** (stored topology) separate from **actual state*
 
 ---
 
-## Experiment reports
-
-Each run is persisted with **`topology_id`**, timestamps, total **`duration_ms`**, and per-step **`expected`** / **`actual`** / **`status`**. A **`SCENARIO_RUN`** event is emitted for **`GET /topologies/{id}/events`**. Retrieve the same JSON later with **`GET /scenarios/{scenario_run_id}/results`**.
-
----
-
 ## Advanced usage
 
-These flows call the same HTTP API that scenarios orchestrate internally—useful for debugging, scripting, or integrating without scenario YAML.
+Use these when you need **raw HTTP**, **topology-only workflows**, or **implementation reference**—the same endpoints power scenario runs under the hood.
 
 ### Raw HTTP lifecycle
 
@@ -151,9 +206,7 @@ export CLOUDNET_ALLOW_EXEC=true
 
 Set `CLOUDNET_API_BASE_URL` if the API is not on `http://127.0.0.1:8010`.
 
----
-
-## Topology status
+### Topology aggregates (`GET /topologies/{id}/status`)
 
 Aggregate view for dashboards or quick health checks:
 
@@ -191,9 +244,9 @@ The database column remains `openstack_id` for backward compatibility. **API res
 
 ---
 
-## Example output snippets
+## Example API response shapes
 
-These are representative shapes from the API and demos (your IDs and counts will differ).
+Representative JSON from the HTTP API (your IDs and counts will differ). Useful when integrating without scenario YAML or debugging step-by-step.
 
 ### Plan (`GET /topologies/{id}/plan`)
 
@@ -298,10 +351,10 @@ Drift item `resource_type` depends on the provider (for example `aws_instance` o
 }
 ```
 
-The mock demo script prints a compact timeline such as:
+**Experiment lifecycle** (same ordering as **Quick Start: Run an experiment** above); the mock demo prints a compact line such as:
 
 ```text
-Timeline: PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONCILE -> VALIDATE(PASS)
+PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
 ```
 
 ---
@@ -352,6 +405,8 @@ Copy `.env.example` to `.env` for local overrides. The example file defaults to 
 ---
 
 ## Run locally (quick reference)
+
+For **`CLOUDNET_PROVIDER=mock make demo-mock`** and **`./scripts/cloudnet run examples/backend-failure.yaml`**, see **Quick Start: Run an experiment** above. The commands below are for developers running the API, docs, and tests.
 
 Install dependencies:
 
