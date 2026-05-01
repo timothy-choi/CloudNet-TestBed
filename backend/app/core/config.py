@@ -19,6 +19,16 @@ def _env_bool(name: str, default: bool = False) -> bool:
 SUPPORTED_PROVIDERS = {"aws", "openstack", "proxmox", "mock"}
 
 
+def aws_use_ssm() -> bool:
+    """When true, access/exec treats SSM as available for AWS nodes."""
+    return _env_bool("AWS_USE_SSM", default=True)
+
+
+def cloudnet_allow_exec() -> bool:
+    """Gate remote exec and workload helpers (SSM)."""
+    return _env_bool("CLOUDNET_ALLOW_EXEC", default=False)
+
+
 def get_cloudnet_provider() -> str:
     configured_provider = os.getenv("CLOUDNET_PROVIDER")
     if configured_provider:

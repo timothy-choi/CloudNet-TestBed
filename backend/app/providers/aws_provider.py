@@ -526,6 +526,59 @@ class AWSProvider(BaseProvider):
             )
         return output
 
+    def get_instance_network_info(self, instance_id: str) -> dict[str, str | None]:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            instance = self._describe_instance_with_retry(ec2, instance_id)
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance lookup failed: {self._error_detail(exc)}"
+            ) from exc
+        priv = instance.get("PrivateIpAddress")
+        pub = instance.get("PublicIpAddress")
+        return {
+            "private_ip": str(priv) if priv else None,
+            "public_ip": str(pub) if pub else None,
+        }
+
+    def send_ssm_command(
+        self,
+        instance_id: str,
+        command: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        settings = self._validated_settings(require_default_ami=False)
+        ssm = self._client("ssm", settings)
+        try:
+            command_response = ssm.send_command(
+                InstanceIds=[instance_id],
+                DocumentName="AWS-RunShellScript",
+                Parameters={"commands": [command]},
+            )
+            cmd_id = command_response["Command"]["CommandId"]
+            invocation = self._poll_ssm_invocation(
+                ssm=ssm,
+                command_id=cmd_id,
+                instance_id=instance_id,
+                timeout_seconds=timeout_seconds,
+            )
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                "AWS SSM command failed. Ensure instances have an IAM role with "
+                "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
+                + self._error_detail(exc)
+            ) from exc
+
+        status = invocation.get("Status")
+        ok = status == "Success"
+        return {
+            "status": "SUCCESS" if ok else "FAILED",
+            "stdout": invocation.get("StandardOutputContent", "").strip(),
+            "stderr": invocation.get("StandardErrorContent", "").strip(),
+        }
+
     def _client(self, service_name: str, settings: AWSSettings) -> Any:
         import boto3
 
@@ -541,9 +594,15 @@ class AWSProvider(BaseProvider):
         ssm: Any,
         command_id: str,
         instance_id: str,
-        max_attempts: int = 20,
+        max_attempts: int | None = None,
         delay_seconds: float = 1.0,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        if timeout_seconds is not None:
+            max_attempts = max(3, int(timeout_seconds / delay_seconds) + 2)
+        elif max_attempts is None:
+            max_attempts = 20
+
         pending_statuses = {"Pending", "InProgress", "Delayed"}
         for attempt in range(max_attempts):
             try:

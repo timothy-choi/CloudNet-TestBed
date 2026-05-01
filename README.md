@@ -73,6 +73,49 @@ CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
 
 ---
 
+## Using a deployed topology
+
+CloudNet is not only about provisioning—it is an **interactive testbed**. Once hosts are deployed and reachable (AWS via **SSM**), you can inspect access metadata, run shell commands on nodes, and start a minimal HTTP demo workload.
+
+### Safety and configuration
+
+| Variable | Purpose |
+|----------|---------|
+| `CLOUDNET_ALLOW_EXEC` | Must be `true` to allow `POST .../exec` and `POST .../workloads/http-demo`. Default is off. |
+| `AWS_USE_SSM` | When `true` (default), AWS access summaries report SSM availability and include `ssm_exec` in `access_methods`. |
+
+Remote exec uses **AWS Systems Manager** (`AWS-RunShellScript`) with a **30 second** command timeout. Obvious destructive patterns are rejected (for example `rm -rf /`, `shutdown`, `reboot`, `mkfs`, fork bombs).
+
+### REST API
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /topologies/{id}/access` | Instance IDs, private/public IPs, SSM availability, suggested access methods. |
+| `POST /topologies/{id}/nodes/{node}/exec` | Body: `{"command": "..."}` — run a shell command on the node’s instance. |
+| `POST /topologies/{id}/workloads/http-demo` | Body: `{"node": "..."}` — start `python3 -m http.server 8080` in the background via SSM. |
+
+### CLI (`scripts/cloudnet`)
+
+Requires PyYAML (included in `backend/requirements.txt`). The CLI resolves the topology by matching the **`name`** field in your YAML against stored topologies (latest id wins if duplicates exist).
+
+```bash
+pip install -r backend/requirements.txt
+
+# Create stored topology and deploy
+./scripts/cloudnet apply examples/three-tier.yaml --deploy
+
+# Allow exec on the API process
+export CLOUDNET_ALLOW_EXEC=true
+
+./scripts/cloudnet access examples/three-tier.yaml
+./scripts/cloudnet exec examples/three-tier.yaml frontend "hostname && ip -brief addr"
+./scripts/cloudnet workload http-demo examples/three-tier.yaml --node frontend
+```
+
+Set `CLOUDNET_API_BASE_URL` if the API is not on `http://127.0.0.1:8010`.
+
+---
+
 ## Topology status
 
 Aggregate view for dashboards or quick health checks:
@@ -346,6 +389,9 @@ Proxmox variables (`PROXMOX_HOST`, `PROXMOX_USER`, …) are documented in `.env.
 | Drift | `GET /topologies/{id}/drift` |
 | Reconcile | `POST /topologies/{id}/reconcile` |
 | Status | `GET /topologies/{id}/status` |
+| Access | `GET /topologies/{id}/access` |
+| Exec | `POST /topologies/{id}/nodes/{node}/exec` |
+| HTTP demo workload | `POST /topologies/{id}/workloads/http-demo` |
 | Resources | `GET /topologies/{id}/resources` |
 | Events | `GET /topologies/{id}/events` |
 

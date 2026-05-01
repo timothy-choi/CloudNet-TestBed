@@ -51,3 +51,11 @@ class PingTestRequest(BaseModel):
 
 class NodeFailureRequest(BaseModel):
     node: str
+
+
+class ExecCommandRequest(BaseModel):
+    command: str
+
+
+class HttpDemoWorkloadRequest(BaseModel):
+    node: str

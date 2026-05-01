@@ -11,6 +11,7 @@ from app.db import get_session
 from app.main import app
 from app.providers.mock_provider import MockProvider
 from app.routes import topology as topology_routes
+from app.services import access_service
 from app.services import deployment_service
 from app.services import topology_status_service
 
@@ -62,6 +63,7 @@ def mock_deployment_provider(monkeypatch) -> MockProvider:
     provider = MockProvider()
     monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
     monkeypatch.setattr(topology_status_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(access_service, "get_provider", lambda: provider)
     return provider
 
 

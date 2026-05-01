@@ -165,3 +165,23 @@ class MockProvider(BaseProvider):
                 f"mock ping failed: source {source_server_id} is {source_status}"
             )
         return "3 packets transmitted, 3 received"
+
+    def send_ssm_command(
+        self,
+        instance_id: str,
+        command: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        _ = timeout_seconds
+        if self.get_server_status(instance_id) != "running":
+            return {
+                "status": "FAILED",
+                "stdout": "",
+                "stderr": f"mock: instance {instance_id} is not running",
+            }
+        return {
+            "status": "SUCCESS",
+            "stdout": f"mock:{command}",
+            "stderr": "",
+        }

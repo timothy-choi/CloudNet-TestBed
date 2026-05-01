@@ -8,7 +8,19 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import FirewallRule, Link, Node, Topology
-from app.schemas import NodeFailureRequest, PingTestRequest, TopologyInput
+from app.schemas import (
+    ExecCommandRequest,
+    HttpDemoWorkloadRequest,
+    NodeFailureRequest,
+    PingTestRequest,
+    TopologyInput,
+)
+from app.services.access_service import (
+    AccessError,
+    build_access_summary,
+    exec_on_node,
+    start_http_demo_workload,
+)
 from app.services.connectivity_service import (
     ConnectivityTestError,
     connectivity_test_summary,
@@ -160,6 +172,66 @@ def get_topology_status(
         raise HTTPException(status_code=404, detail="topology not found")
 
     return build_topology_status(session, topology)
+
+
+def _access_error_response(exc: AccessError) -> HTTPException:
+    message = str(exc)
+    lower = message.lower()
+    if "disabled" in lower:
+        return HTTPException(status_code=403, detail=message)
+    if "blocked" in lower:
+        return HTTPException(status_code=400, detail=message)
+    if "no deployed" in lower:
+        return HTTPException(status_code=404, detail=message)
+    return HTTPException(status_code=400, detail=message)
+
+
+@router.get("/{topology_id}/access")
+def get_topology_access(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return build_access_summary(session, topology)
+    except AccessError as exc:
+        raise _access_error_response(exc) from exc
+
+
+@router.post("/{topology_id}/nodes/{node_name}/exec")
+def exec_topology_node(
+    topology_id: int,
+    node_name: str,
+    body: ExecCommandRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return exec_on_node(session, topology, node_name, body.command)
+    except AccessError as exc:
+        raise _access_error_response(exc) from exc
+
+
+@router.post("/{topology_id}/workloads/http-demo")
+def http_demo_workload(
+    topology_id: int,
+    body: HttpDemoWorkloadRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return start_http_demo_workload(session, topology, body.node)
+    except AccessError as exc:
+        raise _access_error_response(exc) from exc
 
 
 @router.post("/{topology_id}/deploy")
