@@ -4,20 +4,19 @@ from sqlmodel import Session, select
 
 from app.models import DeploymentResource, Event, Topology
 from app.providers.factory import get_provider
+from app.resource_types import INSTANCE_RESOURCE_TYPES, SUBNET_RESOURCE_TYPES
 from app.services.deployment_service import list_topology_resources
 from app.services.drift_service import DriftError, detect_topology_drift
 
-_INSTANCE_TYPES = frozenset({"aws_instance", "nova_server"})
-_SUBNET_TYPES = frozenset({"aws_subnet", "neutron_subnet"})
 _SECURITY_GROUP_TYPES = frozenset({"aws_security_group"})
 
 
 def resources_summary(resources: list[DeploymentResource]) -> dict[str, int]:
     return {
         "instances": sum(
-            1 for r in resources if r.resource_type in _INSTANCE_TYPES
+            1 for r in resources if r.resource_type in INSTANCE_RESOURCE_TYPES
         ),
-        "subnets": sum(1 for r in resources if r.resource_type in _SUBNET_TYPES),
+        "subnets": sum(1 for r in resources if r.resource_type in SUBNET_RESOURCE_TYPES),
         "security_groups": sum(
             1 for r in resources if r.resource_type in _SECURITY_GROUP_TYPES
         ),

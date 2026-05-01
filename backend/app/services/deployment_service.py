@@ -5,6 +5,7 @@ from sqlmodel import Session, select
 
 from app.models import DeploymentResource, Topology
 from app.providers.factory import get_provider
+from app.resource_types import non_aws_deploy_resource_labels
 from app.topology_compiler import compile_topology
 
 
@@ -144,6 +145,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
             )
 
         if not is_aws:
+            net_t, subnet_t, srv_t = non_aws_deploy_resource_labels(provider.name)
             for network_plan in plan["networks"]:
                 network = provider.create_network(
                     name=network_plan["name"],
@@ -152,7 +154,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
                 network_ids_by_name[network_plan["name"]] = network["id"]
                 network_resource = DeploymentResource(
                     topology_id=topology.id,
-                    resource_type="neutron_network",
+                    resource_type=net_t,
                     resource_name=network["name"],
                     openstack_id=network["id"],
                 )
@@ -170,7 +172,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
                 )
                 subnet_resource = DeploymentResource(
                     topology_id=topology.id,
-                    resource_type="neutron_subnet",
+                    resource_type=subnet_t,
                     resource_name=subnet["name"],
                     openstack_id=subnet["id"],
                 )
@@ -195,7 +197,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
                 )
                 server_resource = DeploymentResource(
                     topology_id=topology.id,
-                    resource_type="nova_server",
+                    resource_type=srv_t,
                     resource_name=server["name"],
                     openstack_id=server["id"],
                 )

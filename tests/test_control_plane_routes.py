@@ -751,8 +751,8 @@ def test_mock_control_plane_flow_deploy_validate_drift_reconcile_events(
     assert deploy_response.status_code == 200
     assert deploy_response.json()["status"] == "ACTIVE"
     resources = client.get(f"/topologies/{topology_id}/resources").json()["resources"]
-    assert [resource["type"] for resource in resources].count("neutron_subnet") == 2
-    assert [resource["type"] for resource in resources].count("nova_server") == 3
+    assert [resource["type"] for resource in resources].count("provider_subnet") == 2
+    assert [resource["type"] for resource in resources].count("provider_instance") == 3
 
     validation_response = client.post(f"/topologies/{topology_id}/validate")
     assert validation_response.status_code == 200
@@ -773,7 +773,7 @@ def test_mock_control_plane_flow_deploy_validate_drift_reconcile_events(
     assert drift_response.status_code == 200
     assert drift_response.json()["drift_detected"] is True
     assert {
-        "resource_type": "nova_server",
+        "resource_type": "provider_instance",
         "name": "backend",
         "expected": "running",
         "actual": "stopped",

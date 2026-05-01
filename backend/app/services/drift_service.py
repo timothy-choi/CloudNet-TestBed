@@ -5,6 +5,11 @@ from sqlmodel import Session
 from app.models import DeploymentResource, Topology
 from app.providers.base import BaseProvider
 from app.providers.factory import get_provider
+from app.resource_types import (
+    instance_lookup_types,
+    primary_instance_type_for_missing_drift,
+    subnet_resource_types_for_drift,
+)
 from app.services.deployment_service import (
     compile_deployment_plan,
     list_topology_resources,
@@ -13,6 +18,21 @@ from app.services.deployment_service import (
 
 class DriftError(Exception):
     pass
+
+
+def _find_instance_resource(
+    resources: list[DeploymentResource],
+    node_name: str,
+    provider: BaseProvider,
+) -> DeploymentResource | None:
+    for resource_type in instance_lookup_types(provider.name):
+        for resource in resources:
+            if (
+                resource.resource_type == resource_type
+                and resource.resource_name == node_name
+            ):
+                return resource
+    return None
 
 
 def detect_topology_drift(
@@ -30,22 +50,19 @@ def detect_topology_drift(
         )
 
     resources = list_topology_resources(session, topology.id)
-    server_resource_type = "aws_instance" if provider.name == "aws" else "nova_server"
-    subnet_resource_type = "aws_subnet" if provider.name == "aws" else "neutron_subnet"
-    resources_by_type_name = {
-        (resource.resource_type, resource.resource_name): resource
-        for resource in resources
-    }
+    subnet_types = subnet_resource_types_for_drift(provider.name)
+    missing_label = primary_instance_type_for_missing_drift(provider.name)
+
     items: list[dict[str, str]] = []
 
     for node in topology.nodes:
         if node.type != "host":
             continue
-        resource = resources_by_type_name.get((server_resource_type, node.name))
+        resource = _find_instance_resource(resources, node.name, provider)
         if resource is None:
             items.append(
                 _drift_item(
-                    resource_type=server_resource_type,
+                    resource_type=missing_label,
                     name=node.name,
                     expected="running",
                     actual="missing",
@@ -59,7 +76,7 @@ def detect_topology_drift(
         except Exception:
             items.append(
                 _drift_item(
-                    resource_type=server_resource_type,
+                    resource_type=resource.resource_type,
                     name=node.name,
                     expected="running",
                     actual="missing",
@@ -71,7 +88,7 @@ def detect_topology_drift(
         if status != "running":
             items.append(
                 _drift_item(
-                    resource_type=server_resource_type,
+                    resource_type=resource.resource_type,
                     name=node.name,
                     expected="running",
                     actual=status,
@@ -80,12 +97,12 @@ def detect_topology_drift(
             )
 
     for resource in resources:
-        if resource.resource_type != subnet_resource_type:
+        if resource.resource_type not in subnet_types:
             continue
         if not provider.resource_exists(resource.resource_type, resource.openstack_id):
             items.append(
                 _drift_item(
-                    resource_type=subnet_resource_type,
+                    resource_type=resource.resource_type,
                     name=resource.resource_name,
                     expected="present",
                     actual="missing",

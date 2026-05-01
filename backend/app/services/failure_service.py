@@ -4,6 +4,7 @@ from sqlmodel import Session, select
 
 from app.models import DeploymentResource, FailureEvent, Node, Topology
 from app.providers.factory import get_provider
+from app.resource_types import INSTANCE_RESOURCE_TYPES
 from app.services.deployment_service import list_topology_resources
 
 
@@ -138,7 +139,7 @@ def _server_resource_by_name(
 ) -> DeploymentResource | None:
     for resource in resources:
         if (
-            resource.resource_type in {"nova_server", "aws_instance"}
+            resource.resource_type in INSTANCE_RESOURCE_TYPES
             and resource.resource_name == name
         ):
             return resource
@@ -149,7 +150,7 @@ def _available_server_resources(resources: list[DeploymentResource]) -> str:
     server_resources = [
         f"{resource.resource_type}:{resource.resource_name}"
         for resource in resources
-        if resource.resource_type in {"nova_server", "aws_instance"}
+        if resource.resource_type in INSTANCE_RESOURCE_TYPES
     ]
     if not server_resources:
         return "none"

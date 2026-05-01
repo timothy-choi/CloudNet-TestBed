@@ -5,6 +5,7 @@ from sqlmodel import Session
 from app.core.config import get_cloudnet_provider
 from app.models import DeploymentResource, Topology
 from app.providers.factory import get_provider
+from app.resource_types import instance_types_filter
 from app.services.connectivity_service import (
     ConnectivityTestError,
     validate_topology_links,
@@ -140,11 +141,11 @@ def _repairable_instance_resources(
     resources: list[DeploymentResource],
     provider_name: str,
 ) -> list[DeploymentResource]:
-    resource_type = "aws_instance" if provider_name == "aws" else "nova_server"
+    allowed = instance_types_filter(provider_name)
     return [
         resource
         for resource in resources
-        if resource.resource_type == resource_type
+        if resource.resource_type in allowed
     ]
 
 

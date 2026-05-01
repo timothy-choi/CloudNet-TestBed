@@ -5,6 +5,7 @@ from sqlmodel import Session
 from app.core.config import aws_use_ssm, cloudnet_allow_exec
 from app.models import DeploymentResource, Topology
 from app.providers.factory import get_provider
+from app.resource_types import instance_lookup_types
 from app.services.deployment_service import list_topology_resources
 
 
@@ -20,8 +21,19 @@ _HTTP_DEMO_SCRIPT = (
 )
 
 
-def _instance_resource_type(provider_name: str) -> str:
-    return "aws_instance" if provider_name == "aws" else "nova_server"
+def _find_instance_resource(
+    resources: list[DeploymentResource],
+    node_name: str,
+    provider_name: str,
+) -> DeploymentResource | None:
+    for resource_type in instance_lookup_types(provider_name):
+        for resource in resources:
+            if (
+                resource.resource_type == resource_type
+                and resource.resource_name == node_name
+            ):
+                return resource
+    return None
 
 
 def command_is_forbidden(command: str) -> bool:
@@ -43,17 +55,6 @@ def command_is_forbidden(command: str) -> bool:
     return False
 
 
-def _find_instance_resource(
-    resources: list[DeploymentResource],
-    resource_type: str,
-    node_name: str,
-) -> DeploymentResource | None:
-    for resource in resources:
-        if resource.resource_type == resource_type and resource.resource_name == node_name:
-            return resource
-    return None
-
-
 def _aws_access_methods() -> list[str]:
     if aws_use_ssm():
         return ["ssm_exec"]
@@ -66,14 +67,13 @@ def build_access_summary(session: Session, topology: Topology) -> dict[str, Any]
 
     provider = get_provider()
     resources = list_topology_resources(session, topology.id)
-    inst_type = _instance_resource_type(provider.name)
 
     nodes_out: list[dict[str, Any]] = []
 
     for node in topology.nodes:
         if node.type != "host":
             continue
-        resource = _find_instance_resource(resources, inst_type, node.name)
+        resource = _find_instance_resource(resources, node.name, provider.name)
         if resource is None:
             continue
 
@@ -143,8 +143,7 @@ def exec_on_node(
         )
 
     resources = list_topology_resources(session, topology.id)
-    inst_type = _instance_resource_type(provider.name)
-    resource = _find_instance_resource(resources, inst_type, node_name)
+    resource = _find_instance_resource(resources, node_name, provider.name)
     if resource is None:
         raise AccessError(f"no deployed instance found for node {node_name!r}")
 

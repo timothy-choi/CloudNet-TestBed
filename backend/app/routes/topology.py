@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models import FirewallRule, Link, Node, Topology
+from app.resource_types import INSTANCE_RESOURCE_TYPES
 from app.schemas import (
     ExecCommandRequest,
     HttpDemoWorkloadRequest,
@@ -256,7 +257,7 @@ def deploy_topology_endpoint(
             [
                 resource
                 for resource in response["resources"]
-                if resource["type"] in {"aws_instance", "nova_server"}
+                if resource["type"] in INSTANCE_RESOURCE_TYPES
             ]
         )
         emit_event(

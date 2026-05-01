@@ -56,7 +56,7 @@ def seed_server_resource(
     client: TestClient,
     topology_id: int,
     node_name: str,
-    resource_type: str = "nova_server",
+    resource_type: str = "provider_instance",
 ) -> None:
     session_override = app.dependency_overrides[get_session]
     session_generator = session_override()

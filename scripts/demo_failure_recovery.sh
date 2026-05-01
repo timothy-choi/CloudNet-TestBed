@@ -63,9 +63,9 @@ wait_for_resources() {
 
   for attempt in $(seq 1 "${attempts}"); do
     resources="$(api_get "/topologies/${topology_id}/resources")"
-    server_count="$(jq '[.resources[] | select(.type == "nova_server")] | length' <<<"${resources}")"
-    network_count="$(jq '[.resources[] | select(.type == "neutron_network")] | length' <<<"${resources}")"
-    subnet_count="$(jq '[.resources[] | select(.type == "neutron_subnet")] | length' <<<"${resources}")"
+    server_count="$(jq '[.resources[] | select(.type == "nova_server" or .type == "provider_instance")] | length' <<<"${resources}")"
+    network_count="$(jq '[.resources[] | select(.type == "neutron_network" or .type == "provider_network")] | length' <<<"${resources}")"
+    subnet_count="$(jq '[.resources[] | select(.type == "neutron_subnet" or .type == "provider_subnet")] | length' <<<"${resources}")"
 
     if [[ "${server_count}" -ge 2 && "${network_count}" -ge 1 && "${subnet_count}" -ge 1 ]]; then
       echo "Resources ready: ${server_count} servers, ${network_count} network, ${subnet_count} subnet"

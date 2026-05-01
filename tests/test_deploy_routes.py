@@ -112,25 +112,25 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
         "status": "ACTIVE",
         "resources": [
             {
-                "type": "neutron_network",
+                "type": "provider_network",
                 "name": "deploy-test-net-1",
                 "id": "net-1",
                 "provider_resource_id": "net-1",
             },
             {
-                "type": "neutron_subnet",
+                "type": "provider_subnet",
                 "name": "deploy-test-net-1-subnet",
                 "id": "subnet-1",
                 "provider_resource_id": "subnet-1",
             },
             {
-                "type": "nova_server",
+                "type": "provider_instance",
                 "name": "client-a",
                 "id": "server-client-a",
                 "provider_resource_id": "server-client-a",
             },
             {
-                "type": "nova_server",
+                "type": "provider_instance",
                 "name": "client-b",
                 "id": "server-client-b",
                 "provider_resource_id": "server-client-b",
@@ -271,25 +271,25 @@ def test_resources_endpoint_returns_saved_resources(
         for resource in body["resources"]
     ] == [
         {
-            "type": "neutron_network",
+            "type": "provider_network",
             "name": "deploy-test-net-1",
             "openstack_id": "net-1",
             "provider_resource_id": "net-1",
         },
         {
-            "type": "neutron_subnet",
+            "type": "provider_subnet",
             "name": "deploy-test-net-1-subnet",
             "openstack_id": "subnet-1",
             "provider_resource_id": "subnet-1",
         },
         {
-            "type": "nova_server",
+            "type": "provider_instance",
             "name": "client-a",
             "openstack_id": "server-client-a",
             "provider_resource_id": "server-client-a",
         },
         {
-            "type": "nova_server",
+            "type": "provider_instance",
             "name": "client-b",
             "openstack_id": "server-client-b",
             "provider_resource_id": "server-client-b",
@@ -391,10 +391,10 @@ def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
     assert [
         resource
         for resource in response.json()["resources"]
-        if resource["type"] == "nova_server"
+        if resource["type"] == "provider_instance"
     ] == [
         {
-            "type": "nova_server",
+            "type": "provider_instance",
             "name": "client-a",
             "id": "server-client-a",
             "provider_resource_id": "server-client-a",

@@ -198,7 +198,7 @@ These are representative shapes from the API and demos (your IDs and counts will
 
 ### Drift (`GET /topologies/{id}/drift`)
 
-Drift item `resource_type` depends on the provider (for example `aws_instance` on AWS, `nova_server` with the mock provider).
+Drift item `resource_type` depends on the provider (for example `aws_instance` on AWS, `provider_instance` with the mock provider, `nova_server` on OpenStack).
 
 ```json
 {
