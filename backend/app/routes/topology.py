@@ -1,6 +1,9 @@
 from typing import Any
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -34,6 +37,7 @@ from app.services.failure_service import (
     recover_node,
     serialize_failure_event,
 )
+from app.services.terraform_export_service import export_terraform
 from app.topology_compiler import compile_topology
 
 
@@ -173,6 +177,51 @@ def plan_topology_endpoint(
         return plan_topology(topology)
     except ControlPlaneError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{topology_id}/terraform")
+def terraform_export_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return export_terraform(topology)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{topology_id}/terraform.zip")
+def terraform_export_zip_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> Response:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        export = export_terraform(topology)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    buffer = BytesIO()
+    with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as archive:
+        for filename, content in export["files"].items():
+            archive.writestr(filename, content)
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="cloudnet-topology-{topology_id}-terraform.zip"'
+            )
+        },
+    )
 
 
 @router.post("/{topology_id}/reconcile")

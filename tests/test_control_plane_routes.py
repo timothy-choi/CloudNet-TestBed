@@ -1,5 +1,7 @@
 from collections.abc import Generator
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -95,6 +97,41 @@ def create_three_tier_topology(client: TestClient) -> int:
             "links": [
                 {"from": "frontend", "to": "backend", "subnet": "10.100.1.0/24"},
                 {"from": "backend", "to": "db", "subnet": "10.100.2.0/24"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
+def create_secure_three_tier_topology(client: TestClient) -> int:
+    response = client.post(
+        "/topologies",
+        json={
+            "name": "secure-three-tier-app",
+            "nodes": [
+                {"name": "frontend", "type": "host"},
+                {"name": "backend", "type": "host"},
+                {"name": "db", "type": "host"},
+            ],
+            "links": [
+                {"from": "frontend", "to": "backend", "subnet": "10.120.1.0/24"},
+                {"from": "backend", "to": "db", "subnet": "10.120.2.0/24"},
+            ],
+            "firewall_rules": [
+                {
+                    "name": "allow-frontend-backend-ping",
+                    "protocol": "icmp",
+                    "from": "frontend",
+                    "to": "backend",
+                },
+                {
+                    "name": "allow-backend-db-ping",
+                    "protocol": "icmp",
+                    "from": "backend",
+                    "to": "db",
+                },
             ],
         },
     )
@@ -239,6 +276,48 @@ def test_plan_endpoint_includes_firewall_rules(
             "to": "backend",
         }
     ]
+
+
+def test_terraform_export_includes_vpc_subnets_instances_and_firewall_rules(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    topology_id = create_secure_three_tier_topology(client)
+
+    response = client.get(f"/topologies/{topology_id}/terraform")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["topology_id"] == topology_id
+    assert body["provider"] == "aws"
+    assert set(body["files"]) == {"main.tf", "variables.tf", "outputs.tf"}
+    main_tf = body["files"]["main.tf"]
+    assert 'resource "aws_vpc" "cloudnet"' in main_tf
+    assert main_tf.count('resource "aws_subnet"') == 2
+    assert 'cidr_block              = "10.120.1.0/24"' in main_tf
+    assert 'cidr_block              = "10.120.2.0/24"' in main_tf
+    assert main_tf.count('resource "aws_instance"') == 3
+    assert 'resource "aws_instance" "frontend"' in main_tf
+    assert 'resource "aws_instance" "backend"' in main_tf
+    assert 'resource "aws_instance" "db"' in main_tf
+    assert 'resource "aws_security_group_rule" "allow_frontend_backend_ping"' in main_tf
+    assert 'resource "aws_security_group_rule" "allow_backend_db_ping"' in main_tf
+    assert 'Project   = "CloudNet"' in main_tf
+    assert 'ManagedBy = "CloudNet"' in main_tf
+
+
+def test_terraform_export_zip_contains_files(client: TestClient) -> None:
+    topology_id = create_secure_three_tier_topology(client)
+
+    response = client.get(f"/topologies/{topology_id}/terraform.zip")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert sorted(archive.namelist()) == ["main.tf", "outputs.tf", "variables.tf"]
+        assert 'resource "aws_vpc" "cloudnet"' in archive.read("main.tf").decode()
 
 
 def test_reconcile_starts_stopped_instance_and_validates(

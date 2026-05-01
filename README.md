@@ -222,6 +222,40 @@ For the MVP, `icmp` rules enable ping validation and `tcp` rules may include a
 `port`. If no firewall rules are provided, CloudNet preserves the existing
 default behavior and allows ICMP between CloudNet instances.
 
+## Terraform Export
+
+CloudNet can deploy a topology directly to AWS through boto3, or export the
+equivalent Terraform for review and reproducibility. Terraform export does not
+run Terraform and does not require AWS credentials; it only compiles the stored
+topology into text files.
+
+Export Terraform as JSON:
+
+```bash
+curl http://127.0.0.1:8010/topologies/{topology_id}/terraform
+```
+
+The response contains `main.tf`, `variables.tf`, and `outputs.tf`:
+
+```json
+{
+  "topology_id": 1,
+  "provider": "aws",
+  "files": {
+    "main.tf": "...",
+    "variables.tf": "...",
+    "outputs.tf": "..."
+  }
+}
+```
+
+Download the same files as a zip archive:
+
+```bash
+curl -o cloudnet-terraform.zip \
+  http://127.0.0.1:8010/topologies/{topology_id}/terraform.zip
+```
+
 CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
 default VPCs. Cleanup is required after demos to terminate CloudNet instances
 and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:
