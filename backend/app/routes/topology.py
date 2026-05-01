@@ -40,6 +40,7 @@ from app.services.failure_service import (
     serialize_failure_event,
 )
 from app.services.terraform_export_service import export_terraform
+from app.services.topology_status_service import build_topology_status
 from app.topology_compiler import compile_topology
 
 
@@ -147,6 +148,18 @@ def get_topology(
         raise HTTPException(status_code=404, detail="topology not found")
 
     return serialize_topology(topology)
+
+
+@router.get("/{topology_id}/status")
+def get_topology_status(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    return build_topology_status(session, topology)
 
 
 @router.post("/{topology_id}/deploy")

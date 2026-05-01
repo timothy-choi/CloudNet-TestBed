@@ -1,192 +1,311 @@
 # CloudNet Testbed
 
-CloudNet Testbed is an OpenStack-backed network testing platform for building virtual network labs, deploying real application nodes into them, running connectivity tests, and injecting failures to observe how network behavior affects applications.
+CloudNet TestBed is a small **control plane** for describing network lab topologies, compiling deployment plans, provisioning provider resources (primarily **AWS**), running connectivity validation (ICMP via provider APIs), detecting **drift**, **reconciling** simple failures (for example stopped EC2 instances), and recording an **event timeline**. A **mock** provider exercises the same API flows without cloud credentials or billable resources—ideal for CI and local demos.
 
-The project is intentionally small at this stage. The first milestone is a topology compiler that turns a simple topology definition into a deployment plan. OpenStack provisioning, failure injection, and the Go test runner come later.
+**Languages:** Python (FastAPI, topology compiler, providers), Bash (demos and smoke scripts). A Go-based test runner is reserved for a later milestone.
 
-## Core Workflow
+---
 
-Define topology -> Compile deployment plan -> Provision OpenStack resources -> Run tests -> Inject failures -> Observe results
+## Architecture
 
-## Language Split
+CloudNet keeps **desired state** (stored topology: nodes, links, firewall rules) separate from **actual state** (provider resource IDs persisted after deploy). Drift compares them; reconcile repairs what the MVP supports.
 
-- Python: FastAPI control plane, topology compiler, OpenStack orchestration
-- Go: network test runner
-- Bash: setup, demo, and smoke scripts
-
-## MVP Scope
-
-The MVP is focused on a thin but useful path through the system:
-
-- Define network topologies in YAML or JSON.
-- Compile topologies into deployment plans.
-- Expose the compiler through a small FastAPI control plane.
-- Persist topology definitions in SQLite while the API contract settles.
-- Add OpenStack Nova/Neutron orchestration after the compiler contract is stable.
-- Add a Go-based network test runner after basic provisioning exists.
-- Add Bash scripts for setup, demos, and smoke tests as workflows settle.
-
-No UI or OpenStack provisioning is included yet.
-
-## First Milestone
-
-Compile a simple topology into a deployment plan.
-
-Input topology:
-
-```yaml
-name: simple-two-node-lab
-nodes:
-  - name: client-a
-    type: host
-  - name: client-b
-    type: host
-links:
-  - from: client-a
-    to: client-b
-    subnet: 10.10.1.0/24
+```text
+                    ┌─────────────────────────────────────────┐
+                    │           CloudNet control plane          │
+                    │  ┌─────────┐  ┌──────────┐  ┌───────────┐ │
+  curl / HTTP ─────►│  │Topology │  │ Compiler │  │ Events / │ │
+                    │  │ + SQLite│  │ plan/tf  │  │ drift /  │ │
+                    │  └────┬────┘  └────┬─────┘  └────┬─────┘ │
+                    │       │            │               │       │
+                    └───────┼────────────┼───────────────┼───────┘
+                            │            │               │
+                            ▼            ▼               ▼
+                    ┌──────────────┐  ┌─────────────────────────┐
+                    │ Deployment   │  │ Provider adapter        │
+                    │ resources DB │  │ AWS · Mock · OpenStack… │
+                    └──────────────┘  └───────────┬─────────────┘
+                                                  │
+                                                  ▼
+                                        VPC · subnets · SG · EC2 …
 ```
 
-Compiled deployment plan:
+---
+
+## Lifecycle (demo story)
+
+This is the narrative the mock AWS demo (`make demo-mock`) and real AWS demo (`make demo-aws-control-plane`) follow:
+
+1. **Plan** — `GET /topologies/{id}/plan` compiles the stored topology into a provider-shaped plan (subnets, instances, rules) without creating infrastructure.
+2. **Deploy** — `POST /topologies/{id}/deploy` creates provider resources and records them in the database.
+3. **Validate** — `POST /topologies/{id}/validate` runs ICMP checks along links / firewall rules and records results.
+4. **Fail** — `POST /topologies/{id}/failures/node-down` stops an instance (or equivalent) to simulate failure.
+5. **Drift** — `GET /topologies/{id}/drift` compares desired topology to actual provider state (missing subnets, stopped instances, etc.).
+6. **Reconcile** — `POST /topologies/{id}/reconcile` runs drift detection, then repairs supported drift (for example starting stopped instances).
+7. **Validate** — Run validation again to confirm recovery.
+8. **Cleanup** — Terminate instances and delete the demo VPC when using real AWS (`DELETE /provider/networks/{vpc_id}` or `CLOUDNET_DEMO_CLEANUP=true` for the AWS demo script).
+
+---
+
+## Demo commands
+
+Run the **mock** control-plane loop (safe, no AWS credentials):
+
+```bash
+CLOUDNET_PROVIDER=mock make dev
+# another terminal:
+make demo-mock
+```
+
+Run the **AWS** control-plane demo (creates real VPC/EC2 resources; costs money):
+
+```bash
+make dev
+make check-api
+make demo-aws-control-plane
+```
+
+Optional: destroy the demo VPC at the end of the AWS script:
+
+```bash
+CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
+```
+
+---
+
+## Topology status
+
+Aggregate view for dashboards or quick health checks:
+
+```bash
+curl http://127.0.0.1:8010/topologies/1/status
+```
+
+Example response:
 
 ```json
 {
-  "topology_name": "simple-two-node-lab",
-  "networks": [
+  "topology_id": 1,
+  "status": "ACTIVE",
+  "provider": "aws",
+  "resources_summary": {
+    "instances": 2,
+    "subnets": 2,
+    "security_groups": 1
+  },
+  "last_validation": "PASSED",
+  "drift_detected": false
+}
+```
+
+`last_validation` reflects the latest `VALIDATION` event (`PASSED` / `FAILED`) or `null` if none. If hosts are defined but not yet deployed, drift vs desired state may report drift.
+
+---
+
+## Provider resource identifiers
+
+The database column remains `openstack_id` for backward compatibility. **API responses** expose:
+
+- **`provider_resource_id`** — canonical cloud resource identifier for the active provider.
+- **`openstack_id`** — same value, retained for older clients; prefer `provider_resource_id` for new integrations.
+
+---
+
+## Example output snippets
+
+These are representative shapes from the API and demos (your IDs and counts will differ).
+
+### Plan (`GET /topologies/{id}/plan`)
+
+```json
+{
+  "topology_id": 7,
+  "provider": "mock",
+  "plan": {
+    "vpc": { "cidr": "10.0.0.0/16" },
+    "subnets": [
+      { "cidr": "10.130.1.0/24" },
+      { "cidr": "10.130.2.0/24" }
+    ],
+    "instances": [
+      { "name": "frontend" },
+      { "name": "backend" },
+      { "name": "db" }
+    ],
+    "security_groups": [{ "name": "cloudnet-sg" }],
+    "firewall_rules": []
+  }
+}
+```
+
+### Successful validation (`POST /topologies/{id}/validate`)
+
+```json
+{
+  "topology_id": 7,
+  "status": "PASSED",
+  "results": [
+    { "source": "frontend", "target": "backend", "status": "PASSED" }
+  ]
+}
+```
+
+### Drift (`GET /topologies/{id}/drift`)
+
+```json
+{
+  "topology_id": 7,
+  "drift_detected": true,
+  "items": [
     {
-      "name": "simple-two-node-lab-net-1",
-      "subnet": "10.10.1.0/24",
-      "attached_nodes": ["client-a", "client-b"]
-    }
-  ],
-  "servers": [
-    {
-      "name": "client-a",
-      "type": "host"
-    },
-    {
-      "name": "client-b",
-      "type": "host"
+      "resource_type": "aws_instance",
+      "name": "backend",
+      "expected": "running",
+      "actual": "stopped",
+      "severity": "warning"
     }
   ]
 }
 ```
 
-## Project Structure
+### Reconcile (`POST /topologies/{id}/reconcile`)
 
-```text
-backend/
-  app/
-    main.py
-    topology_compiler.py
-    schemas.py
-cli/
-examples/
-tests/
+```json
+{
+  "topology_id": 7,
+  "status": "RECONCILED",
+  "drift": {
+    "topology_id": 7,
+    "drift_detected": true,
+    "items": [
+      {
+        "resource_type": "aws_instance",
+        "name": "backend",
+        "expected": "running",
+        "actual": "stopped",
+        "severity": "warning"
+      }
+    ]
+  },
+  "actions": [
+    { "node": "backend", "action": "start", "result": "started" },
+    { "action": "validate", "result": "PASSED" }
+  ]
+}
 ```
 
-## Setup
+### Event timeline (`GET /topologies/{id}/events`)
+
+```json
+{
+  "topology_id": 7,
+  "events": [
+    {
+      "type": "DEPLOY_COMPLETE",
+      "status": "SUCCESS",
+      "message": "Deployed 3 instances",
+      "metadata": { "instance_count": 3 }
+    },
+    {
+      "type": "VALIDATION",
+      "status": "SUCCESS",
+      "message": "Topology validation PASSED",
+      "metadata": {}
+    }
+  ]
+}
+```
+
+The mock demo script prints a compact timeline such as:
+
+```text
+Timeline: PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONCILE -> VALIDATE(PASS)
+```
+
+---
+
+## Cost safety checklist (AWS)
+
+Use this before enabling real deployments:
+
+| Practice | Detail |
+|----------|--------|
+| Cap instance count | Set `AWS_MAX_INSTANCES_PER_DEPLOY` low (for example `2`) for demos. |
+| Small instance type | Default `AWS_DEFAULT_INSTANCE_TYPE=t3.micro`. |
+| No NAT Gateway | CloudNet does not create NAT Gateways. |
+| No ALB by default | CloudNet does not provision Application Load Balancers. |
+| Gate EC2 creation | Instances are refused unless `AWS_ALLOW_CREATE_INSTANCES=true`. |
+| Clean up | After demos: `curl -X DELETE http://127.0.0.1:8010/provider/networks/{vpc_id}` or use `CLOUDNET_DEMO_CLEANUP=true` with `make demo-aws-control-plane`. |
+
+---
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---------|----------------|
+| **AMI not found** | `AWS_DEFAULT_AMI_ID` exists in `AWS_REGION`; AMIs are regional. |
+| **VPC limit exceeded** | Default VPC quota per region; delete unused VPCs or request a limit increase. |
+| **`iam:PassRole` denied** | IAM user/role needs permission to pass the instance profile role used for SSM. |
+| **SSM `InvalidInstanceId`** | Instance not registered with SSM yet (wait for agent); wrong region/account; or instance lacks `AmazonSSMManagedInstanceCore` and SSM Agent (use Amazon Linux 2023 or equivalent). |
+| **Public IP null** | Expected for subnets without auto-assign public IP; validation uses SSM Run Command, not public SSH. |
+| **Ping / validation failed** | Security group / ICMP rules; stopped instance; SSM connectivity; check `GET .../drift` and failure events. |
+
+---
+
+## Providers
+
+Select infrastructure with `CLOUDNET_PROVIDER`:
+
+| Value | Notes |
+|-------|--------|
+| `mock` | Full control-plane path without cloud calls; used in CI. |
+| `aws` | Real VPC, subnets, security groups, EC2 (when allowed). |
+| `openstack` | Nova/Neutron-oriented naming in API responses. |
+| `proxmox` | Health/list oriented; VM creation not implemented yet. |
+
+If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when `OPENSTACK_ENABLED=true`; otherwise **mock**.
+
+---
+
+## Run locally (quick reference)
+
+Install dependencies:
 
 ```bash
 make install
 ```
 
-## Providers
-
-CloudNet selects infrastructure with `CLOUDNET_PROVIDER`.
-
-- OpenStack: `CLOUDNET_PROVIDER=openstack`
-- Proxmox: `CLOUDNET_PROVIDER=proxmox`
-- AWS: `CLOUDNET_PROVIDER=aws`
-- Mock: `CLOUDNET_PROVIDER=mock`
-
-If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when
-`OPENSTACK_ENABLED=true`; otherwise it uses the mock provider.
-
-## Run Locally Without AWS
-
-AWS is optional for local development and CI. Mock mode demonstrates the full
-CloudNet control-plane behavior safely without credentials and without creating
-billable infrastructure.
-
-Start CloudNet with the mock provider:
+Mock backend:
 
 ```bash
 CLOUDNET_PROVIDER=mock make dev
 ```
 
-In another terminal, run the no-AWS demo:
+Health:
 
 ```bash
-make demo-mock
+curl http://127.0.0.1:8010/health
 ```
 
-The mock demo runs:
+Interactive API docs:
 
 ```text
-plan -> deploy -> validate PASS -> node-down -> validate FAIL -> drift -> reconcile -> validate PASS -> events
+http://127.0.0.1:8010/docs
 ```
 
-Use AWS mode only when you intentionally want real infrastructure:
+Run tests:
 
 ```bash
-CLOUDNET_PROVIDER=aws make dev
+make test
 ```
 
-AWS mode provisions real VPC, subnet, security group, and EC2 resources, which
-can cost money.
+CI runs `make ci` (compile check + tests) and `make demo-mock` against a live local API.
 
-## OpenStack Setup
+---
 
-Copy `.env.example` to `.env` and fill in your OpenStack credentials.
+## AWS setup (summary)
 
-```bash
-cp .env.example .env
-```
-
-Set `OPENSTACK_ENABLED=true` when you want the API to sanity-check an OpenStack connection. Existing OpenStack deploy behavior is still available through the OpenStack provider.
-
-## Proxmox Setup
-
-Install Proxmox VE and make sure the backend can reach its API on port `8006`.
-For local development, you can use `root@pam`; for shared environments, create a
-dedicated API user with the minimum permissions needed to inspect nodes, VMs, and
-network configuration.
-
-Set these values in `.env`:
-
-```bash
-CLOUDNET_PROVIDER=proxmox
-PROXMOX_HOST=192.168.1.50
-PROXMOX_PORT=8006
-PROXMOX_USER=root@pam
-PROXMOX_PASSWORD=your-password
-PROXMOX_VERIFY_SSL=false
-PROXMOX_NODE=pve
-```
-
-Then start the backend and check the provider:
-
-```bash
-curl http://localhost:8010/provider/health
-```
-
-Initial Proxmox support is health and list operations only. VM creation is not
-implemented yet.
-
-## AWS Setup
-
-AWS is the practical real-infrastructure provider for the MVP. Start with
-health and list operations before provisioning resources. The current AWS
-provider can create and delete tagged VPC/subnet/EC2 resources, but it does not
-create NAT Gateways yet.
-
-Costs can start as soon as AWS resources are created outside CloudNet. Use a
-low-cost region and instance type, keep experiments small, and clean up
-resources when you are done.
-
-Create or choose an IAM user with EC2 read permissions and choose an AMI ID in
-your region. Set these values in `.env`:
+Create or choose an IAM principal with EC2 and related permissions. Example `.env` entries:
 
 ```bash
 CLOUDNET_PROVIDER=aws
@@ -201,327 +320,63 @@ AWS_MAX_INSTANCES_PER_DEPLOY=2
 AWS_SSH_ALLOWED_CIDR=203.0.113.10/32
 ```
 
-Then start the backend and check the provider:
+Connectivity validation uses **SSM Run Command**, not public SSH. Instances need an IAM instance profile with **AmazonSSMManagedInstanceCore** and an AMI with **SSM Agent** (for example Amazon Linux 2023).
 
 ```bash
 curl http://localhost:8010/provider/health
 ```
 
-### AWS Safety
+---
 
-CloudNet defaults to `t3.micro` and refuses to create EC2 instances unless
-`AWS_ALLOW_CREATE_INSTANCES=true` is set. Keep
-`AWS_MAX_INSTANCES_PER_DEPLOY=2` for demos until you intentionally raise it.
+## OpenStack & Proxmox
 
-Set `AWS_SSH_ALLOWED_CIDR` to your public IP CIDR if you need SSH access. If it
-is unset, CloudNet does not add a public SSH ingress rule. CloudNet does not
-create NAT Gateways, load balancers, or Elastic IPs.
+Copy `.env.example` to `.env` for OpenStack credentials. Set `OPENSTACK_ENABLED=true` when you want connection sanity checks.
 
-AWS connectivity validation uses Systems Manager Run Command instead of public
-SSH. Instances need an IAM role with `AmazonSSMManagedInstanceCore`, and the AMI
-must have SSM Agent installed, such as Amazon Linux 2023.
+Proxmox variables (`PROXMOX_HOST`, `PROXMOX_USER`, …) are documented in `.env.example`; initial support focuses on health and listing.
 
-## Control Plane Behavior
+---
 
-CloudNet now separates desired state from actual state. The desired state is the
-stored topology: hosts, links, and subnets. The actual state is the provider
-resources recorded in the database, such as AWS VPCs, subnets, security groups,
-and EC2 instances.
+## Control plane API overview
 
-Use `GET /topologies/{topology_id}/plan` to compile a topology into a deployment
-plan without calling AWS or creating resources.
+| Step | Endpoint |
+|------|----------|
+| Plan | `GET /topologies/{id}/plan` |
+| Deploy | `POST /topologies/{id}/deploy` |
+| Validate | `POST /topologies/{id}/validate` |
+| Drift | `GET /topologies/{id}/drift` |
+| Reconcile | `POST /topologies/{id}/reconcile` |
+| Status | `GET /topologies/{id}/status` |
+| Resources | `GET /topologies/{id}/resources` |
+| Events | `GET /topologies/{id}/events` |
 
-Use `POST /topologies/{topology_id}/reconcile` to compare stored AWS instance
-resources with AWS. Reconcile repairs stopped EC2 instances by starting them,
-waits until repaired instances are running, then runs the existing validation
-flow. It does not create new resources or recreate deleted instances in this
-MVP.
+---
 
-Example control-plane loop:
+## Terraform export
 
-```text
-deploy -> PASS
-stop node -> FAIL
-reconcile -> PASS
-```
-
-## Firewall Policy as Topology
-
-Topologies can include `firewall_rules` to describe allowed traffic between
-logical nodes. CloudNet compiles those rules into AWS Security Group ingress
-rules on the shared `cloudnet-sg` used by CloudNet instances.
-
-For the MVP, `icmp` rules enable ping validation and `tcp` rules may include a
-`port`. If no firewall rules are provided, CloudNet preserves the existing
-default behavior and allows ICMP between CloudNet instances.
-
-## Terraform Export
-
-CloudNet can deploy a topology directly to AWS through boto3, or export the
-equivalent Terraform for review and reproducibility. Terraform export does not
-run Terraform and does not require AWS credentials; it only compiles the stored
-topology into text files.
-
-Export Terraform as JSON:
+Export compiled Terraform as JSON (no credentials required to generate files):
 
 ```bash
 curl http://127.0.0.1:8010/topologies/{topology_id}/terraform
 ```
 
-The response contains `main.tf`, `variables.tf`, and `outputs.tf`:
-
-```json
-{
-  "topology_id": 1,
-  "provider": "aws",
-  "files": {
-    "main.tf": "...",
-    "variables.tf": "...",
-    "outputs.tf": "..."
-  }
-}
-```
-
-Download the same files as a zip archive:
+Zip download:
 
 ```bash
 curl -o cloudnet-terraform.zip \
   http://127.0.0.1:8010/topologies/{topology_id}/terraform.zip
 ```
 
-## Observability & Event Timeline
+---
 
-CloudNet tracks control-plane actions as structured events. Plan, deploy,
-validation, failure injection, and reconcile operations are recorded with a
-timestamp, type, status, message, and metadata so users can inspect system
-behavior over time.
+## Firewall rules in topology
 
-Fetch a topology timeline:
+Topologies may include `firewall_rules` (for example ICMP between nodes). These compile to security group rules on the shared CloudNet security group for AWS deployments.
 
-```bash
-curl http://127.0.0.1:8010/topologies/{topology_id}/events
-```
+---
 
-Fetch the latest events first:
+## Compile-only example
 
-```bash
-curl "http://127.0.0.1:8010/topologies/{topology_id}/events?reverse=true&limit=10"
-```
-
-Example event:
-
-```json
-{
-  "type": "DEPLOY_COMPLETE",
-  "status": "SUCCESS",
-  "message": "Deployed 3 instances",
-  "metadata": {
-    "instance_count": 3
-  }
-}
-```
-
-## Drift Detection
-
-CloudNet can compare desired topology state with actual AWS state before
-reconciling. Drift detection checks persisted CloudNet resources against AWS and
-reports missing or unhealthy infrastructure, including stopped or missing EC2
-instances, missing subnets, missing security groups, and missing firewall rules.
-
-Check drift without repairing anything:
-
-```bash
-curl http://127.0.0.1:8010/topologies/{topology_id}/drift
-```
-
-Example response:
-
-```json
-{
-  "topology_id": 13,
-  "drift_detected": true,
-  "items": [
-    {
-      "resource_type": "aws_instance",
-      "name": "client-b",
-      "expected": "running",
-      "actual": "stopped",
-      "severity": "warning"
-    }
-  ]
-}
-```
-
-Reconcile runs drift detection first, emits a `DRIFT_DETECTED` event when drift
-exists, and then repairs what the MVP supports, such as stopped EC2 instances
-and missing firewall rules.
-
-CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
-default VPCs. Cleanup is required after demos to terminate CloudNet instances
-and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:
-
-```bash
-curl -X DELETE http://localhost:8010/provider/networks/{vpc_id}
-```
-
-## Demo: Plan -> Deploy -> Validate -> Fail -> Reconcile
-
-This AWS demo shows CloudNet acting as a control plane: the topology is desired
-state, AWS is actual state, and reconcile repairs drift.
-
-EC2 can cost money. Keep `AWS_MAX_INSTANCES_PER_DEPLOY` low, run the demo in a
-low-cost region, and clean up the VPC when you are done.
-
-Start the API with AWS configured:
-
-```bash
-make dev
-make check-api
-```
-
-Run the demo:
-
-```bash
-make demo-aws-control-plane
-```
-
-Or run the script directly against a non-default API URL:
-
-```bash
-CLOUDNET_API_BASE_URL=http://127.0.0.1:8010 scripts/demo_aws_control_plane.sh
-```
-
-The demo creates a three-node topology:
-
-```text
-frontend -> backend -> db
-```
-
-It creates two subnets, two ICMP firewall rules, deploys AWS resources, validates
-connectivity, stops the `backend` node, validates failure, reconciles, and
-validates recovery.
-
-Expected output snippets:
-
-```text
-==> Planning topology without deploying
-...
-==> Deploying topology
-"status": "ACTIVE"
-...
-==> Validating baseline connectivity (expected PASSED)
-"status": "PASSED"
-...
-==> Validating after failure (expected FAILED)
-"status": "FAILED"
-...
-==> Reconciling desired state to actual state
-"status": "RECONCILED"
-...
-==> Validating after reconcile (expected PASSED)
-"status": "PASSED"
-```
-
-To have the script clean up the AWS VPC at the end:
-
-```bash
-CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
-```
-
-Manual cleanup uses the VPC ID printed by the demo:
-
-```bash
-curl -X DELETE http://127.0.0.1:8010/provider/networks/{vpc_id}
-```
-
-## Local Development
-
-Install backend dependencies:
-
-```bash
-make install
-```
-
-Run the backend on port 8010:
-
-```bash
-make run
-```
-
-Stop any local `uvicorn app.main:app` process for this project:
-
-```bash
-make stop
-```
-
-Restart the backend cleanly:
-
-```bash
-make dev
-```
-
-Run tests:
-
-```bash
-make test
-```
-
-## Failure Recovery Demo
-
-With OpenStack credentials configured and the backend running, this demo exercises the full control-plane loop:
-
-Deploy -> Validate PASSED -> Inject failure -> Validate FAILED -> Recover -> Validate PASSED
-
-```bash
-make dev
-scripts/check_api.sh
-scripts/demo_failure_recovery.sh
-```
-
-You can also run the script through Make:
-
-```bash
-make check-api
-make demo-failure-recovery
-```
-
-If your API is not on the default port, set `CLOUDNET_API_BASE_URL`:
-
-```bash
-CLOUDNET_API_BASE_URL=http://127.0.0.1:8020 scripts/demo_failure_recovery.sh
-```
-
-If port 8010 is busy, free it:
-
-```bash
-make free-port
-```
-
-Or run the backend on another port:
-
-```bash
-make run-port PORT=8020
-```
-
-## Run The API
-
-```bash
-make run
-```
-
-Health check:
-
-```bash
-curl http://127.0.0.1:8010/health
-```
-
-API docs:
-
-```text
-http://127.0.0.1:8010/docs
-```
-
-Compile a topology:
+`POST /compile` validates and compiles a topology JSON payload without persisting it:
 
 ```bash
 curl -X POST http://127.0.0.1:8010/compile \
@@ -538,31 +393,31 @@ curl -X POST http://127.0.0.1:8010/compile \
   }'
 ```
 
-Store a topology:
+---
 
-```bash
-curl -X POST http://127.0.0.1:8010/topologies \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "simple-two-node-lab",
-    "nodes": [
-      {"name": "client-a", "type": "host"},
-      {"name": "client-b", "type": "host"}
-    ],
-    "links": [
-      {"from": "client-a", "to": "client-b", "subnet": "10.10.1.0/24"}
-    ]
-  }'
+## Project layout
+
+```text
+backend/app/     FastAPI app, routes, providers, services
+scripts/         Demos, run helpers
+tests/           Pytest suite
 ```
 
-List stored topologies:
+---
+
+## Ports and utilities
+
+If port `8010` is busy:
 
 ```bash
-curl http://127.0.0.1:8010/topologies
+make free-port
+# or
+make run-port PORT=8020
 ```
 
-## Run Tests
+Failure-recovery script (OpenStack-oriented naming):
 
 ```bash
-make test
+make check-api
+make demo-failure-recovery
 ```

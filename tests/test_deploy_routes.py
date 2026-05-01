@@ -10,7 +10,9 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.db import get_session
 from app.main import app
 from app.providers.mock_provider import MockProvider
+from app.routes import topology as topology_routes
 from app.services import deployment_service
+from app.services import topology_status_service
 
 
 @pytest.fixture
@@ -59,6 +61,7 @@ def create_topology(
 def mock_deployment_provider(monkeypatch) -> MockProvider:
     provider = MockProvider()
     monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(topology_status_service, "get_provider", lambda: provider)
     return provider
 
 
@@ -106,14 +109,30 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
         "topology_id": topology_id,
         "status": "ACTIVE",
         "resources": [
-            {"type": "neutron_network", "name": "deploy-test-net-1", "id": "net-1"},
+            {
+                "type": "neutron_network",
+                "name": "deploy-test-net-1",
+                "id": "net-1",
+                "provider_resource_id": "net-1",
+            },
             {
                 "type": "neutron_subnet",
                 "name": "deploy-test-net-1-subnet",
                 "id": "subnet-1",
+                "provider_resource_id": "subnet-1",
             },
-            {"type": "nova_server", "name": "client-a", "id": "server-client-a"},
-            {"type": "nova_server", "name": "client-b", "id": "server-client-b"},
+            {
+                "type": "nova_server",
+                "name": "client-a",
+                "id": "server-client-a",
+                "provider_resource_id": "server-client-a",
+            },
+            {
+                "type": "nova_server",
+                "name": "client-b",
+                "id": "server-client-b",
+                "provider_resource_id": "server-client-b",
+            },
         ],
     }
     assert calls == [
@@ -245,6 +264,7 @@ def test_resources_endpoint_returns_saved_resources(
             "type": resource["type"],
             "name": resource["name"],
             "openstack_id": resource["openstack_id"],
+            "provider_resource_id": resource["provider_resource_id"],
         }
         for resource in body["resources"]
     ] == [
@@ -252,21 +272,25 @@ def test_resources_endpoint_returns_saved_resources(
             "type": "neutron_network",
             "name": "deploy-test-net-1",
             "openstack_id": "net-1",
+            "provider_resource_id": "net-1",
         },
         {
             "type": "neutron_subnet",
             "name": "deploy-test-net-1-subnet",
             "openstack_id": "subnet-1",
+            "provider_resource_id": "subnet-1",
         },
         {
             "type": "nova_server",
             "name": "client-a",
             "openstack_id": "server-client-a",
+            "provider_resource_id": "server-client-a",
         },
         {
             "type": "nova_server",
             "name": "client-b",
             "openstack_id": "server-client-b",
+            "provider_resource_id": "server-client-b",
         },
     ]
 
@@ -367,7 +391,12 @@ def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:
         for resource in response.json()["resources"]
         if resource["type"] == "nova_server"
     ] == [
-        {"type": "nova_server", "name": "client-a", "id": "server-client-a"},
+        {
+            "type": "nova_server",
+            "name": "client-a",
+            "id": "server-client-a",
+            "provider_resource_id": "server-client-a",
+        },
     ]
 
 
@@ -433,32 +462,47 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
         "topology_id": topology_id,
         "status": "ACTIVE",
         "resources": [
-            {"type": "aws_vpc", "name": "deploy-test-net-1", "id": "vpc-1"},
+            {
+                "type": "aws_vpc",
+                "name": "deploy-test-net-1",
+                "id": "vpc-1",
+                "provider_resource_id": "vpc-1",
+            },
             {
                 "type": "aws_subnet",
                 "name": "deploy-test-net-1-subnet",
                 "id": "subnet-1",
+                "provider_resource_id": "subnet-1",
             },
             {
                 "type": "aws_internet_gateway",
                 "name": "deploy-test-net-1-subnet-igw",
                 "id": "igw-1",
+                "provider_resource_id": "igw-1",
             },
             {
                 "type": "aws_route_table",
                 "name": "deploy-test-net-1-subnet-rt",
                 "id": "rtb-1",
+                "provider_resource_id": "rtb-1",
             },
             {
                 "type": "aws_route_table_association",
                 "name": "deploy-test-net-1-subnet-rt-assoc",
                 "id": "rtbassoc-1",
+                "provider_resource_id": "rtbassoc-1",
             },
-            {"type": "aws_security_group", "name": "cloudnet-sg", "id": "sg-1"},
+            {
+                "type": "aws_security_group",
+                "name": "cloudnet-sg",
+                "id": "sg-1",
+                "provider_resource_id": "sg-1",
+            },
             {
                 "type": "aws_instance",
                 "name": "client-a",
                 "id": "i-client-a",
+                "provider_resource_id": "i-client-a",
                 "private_ip": "10.20.1.10",
                 "public_ip": "198.51.100.10",
             },
@@ -466,6 +510,7 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
                 "type": "aws_instance",
                 "name": "client-b",
                 "id": "i-client-b",
+                "provider_resource_id": "i-client-b",
                 "private_ip": "10.20.1.11",
                 "public_ip": "198.51.100.11",
             },
@@ -481,6 +526,7 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
             "type": resource["type"],
             "name": resource["name"],
             "openstack_id": resource["openstack_id"],
+            "provider_resource_id": resource["provider_resource_id"],
         }
         for resource in resources_response.json()["resources"]
     ] == [
@@ -488,41 +534,49 @@ def test_aws_deploy_creates_instances_and_aws_resource_types(
             "type": "aws_vpc",
             "name": "deploy-test-net-1",
             "openstack_id": "vpc-1",
+            "provider_resource_id": "vpc-1",
         },
         {
             "type": "aws_subnet",
             "name": "deploy-test-net-1-subnet",
             "openstack_id": "subnet-1",
+            "provider_resource_id": "subnet-1",
         },
         {
             "type": "aws_internet_gateway",
             "name": "deploy-test-net-1-subnet-igw",
             "openstack_id": "igw-1",
+            "provider_resource_id": "igw-1",
         },
         {
             "type": "aws_route_table",
             "name": "deploy-test-net-1-subnet-rt",
             "openstack_id": "rtb-1",
+            "provider_resource_id": "rtb-1",
         },
         {
             "type": "aws_route_table_association",
             "name": "deploy-test-net-1-subnet-rt-assoc",
             "openstack_id": "rtbassoc-1",
+            "provider_resource_id": "rtbassoc-1",
         },
         {
             "type": "aws_security_group",
             "name": "cloudnet-sg",
             "openstack_id": "sg-1",
+            "provider_resource_id": "sg-1",
         },
         {
             "type": "aws_instance",
             "name": "client-a",
             "openstack_id": "i-client-a",
+            "provider_resource_id": "i-client-a",
         },
         {
             "type": "aws_instance",
             "name": "client-b",
             "openstack_id": "i-client-b",
+            "provider_resource_id": "i-client-b",
         },
     ]
 
@@ -652,8 +706,18 @@ def test_aws_deploy_creates_subnet_per_link_and_uses_first_host_subnet(
         for resource in response.json()["resources"]
         if resource["type"] == "aws_subnet"
     ] == [
-        {"type": "aws_subnet", "name": "deploy-test-net-1-subnet", "id": "subnet-1"},
-        {"type": "aws_subnet", "name": "deploy-test-net-2-subnet", "id": "subnet-2"},
+        {
+            "type": "aws_subnet",
+            "name": "deploy-test-net-1-subnet",
+            "id": "subnet-1",
+            "provider_resource_id": "subnet-1",
+        },
+        {
+            "type": "aws_subnet",
+            "name": "deploy-test-net-2-subnet",
+            "id": "subnet-2",
+            "provider_resource_id": "subnet-2",
+        },
     ]
     assert response.json()["warnings"] == [
         "multi-homed node backend appears in multiple links; "
@@ -756,3 +820,81 @@ def test_aws_deploy_applies_firewall_rules_to_security_group(
             ],
         }
     ]
+
+
+def test_topology_status_endpoint_summarizes_resources_and_validation(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    provider = mock_deployment_provider(monkeypatch)
+
+    def fake_validate(session, topology):
+        return {
+            "topology_id": topology.id,
+            "status": "PASSED",
+            "results": [],
+        }
+
+    monkeypatch.setattr(
+        topology_routes,
+        "validate_topology_links",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        provider,
+        "create_network",
+        lambda name, cidr=None: {"id": "net-1", "name": name, "status": "ACTIVE"},
+    )
+    monkeypatch.setattr(
+        provider,
+        "create_subnet",
+        lambda network_id, name, cidr: {
+            "id": "subnet-1",
+            "name": name,
+            "cidr": cidr,
+            "network_id": network_id,
+        },
+    )
+    monkeypatch.setattr(
+        provider,
+        "create_server",
+        lambda name, network_id: {
+            "id": f"server-{name}",
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
+        },
+    )
+
+    topology_id = create_topology(client)
+    empty = client.get(f"/topologies/{topology_id}/status").json()
+    assert empty["topology_id"] == topology_id
+    assert empty["status"] == "CREATED"
+    assert empty["resources_summary"] == {
+        "instances": 0,
+        "subnets": 0,
+        "security_groups": 0,
+    }
+    assert empty["last_validation"] is None
+    assert empty["drift_detected"] is True
+
+    client.post(f"/topologies/{topology_id}/deploy")
+    deployed = client.get(f"/topologies/{topology_id}/status").json()
+    assert deployed["status"] == "ACTIVE"
+    assert deployed["resources_summary"] == {
+        "instances": 2,
+        "subnets": 1,
+        "security_groups": 0,
+    }
+    assert deployed["drift_detected"] is False
+
+    client.post(f"/topologies/{topology_id}/validate")
+    validated = client.get(f"/topologies/{topology_id}/status").json()
+    assert validated["last_validation"] == "PASSED"
+
+
+def test_topology_status_endpoint_returns_404_for_unknown_topology(
+    client: TestClient,
+) -> None:
+    response = client.get("/topologies/999999/status")
+    assert response.status_code == 404

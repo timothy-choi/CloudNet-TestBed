@@ -87,7 +87,7 @@ wait_for_aws_resources() {
     vpc_count="$(jq '[.resources[] | select(.type == "aws_vpc")] | length' <<<"${resources}")"
     subnet_count="$(jq '[.resources[] | select(.type == "aws_subnet")] | length' <<<"${resources}")"
     instance_count="$(jq '[.resources[] | select(.type == "aws_instance")] | length' <<<"${resources}")"
-    VPC_ID="$(jq -r '.resources[] | select(.type == "aws_vpc") | .openstack_id' <<<"${resources}" | head -n 1)"
+    VPC_ID="$(jq -r '.resources[] | select(.type == "aws_vpc") | .provider_resource_id // .openstack_id' <<<"${resources}" | head -n 1)"
 
     if [[ "${vpc_count}" -ge 1 && "${subnet_count}" -ge 2 && "${instance_count}" -ge 3 ]]; then
       echo "Resources ready: ${vpc_count} VPC, ${subnet_count} subnets, ${instance_count} instances"

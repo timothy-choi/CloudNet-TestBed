@@ -54,15 +54,18 @@ def serialize_deployment_resource(resource: DeploymentResource) -> dict[str, Any
         "type": resource.resource_type,
         "name": resource.resource_name,
         "openstack_id": resource.openstack_id,
+        "provider_resource_id": resource.openstack_id,
         "created_at": resource.created_at,
     }
 
 
 def deployment_summary_resource(resource: DeploymentResource) -> dict[str, Any]:
+    rid = resource.openstack_id
     return {
         "type": resource.resource_type,
         "name": resource.resource_name,
-        "id": resource.openstack_id,
+        "id": rid,
+        "provider_resource_id": rid,
     }
 
 
