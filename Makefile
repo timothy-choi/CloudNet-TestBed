@@ -1,4 +1,4 @@
-.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery
+.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery demo-aws-control-plane
 
 PORT ?= 8010
 PYTHON ?= python3
@@ -31,3 +31,6 @@ check-api:
 
 demo-failure-recovery:
 	./scripts/demo_failure_recovery.sh
+
+demo-aws-control-plane:
+	./scripts/demo_aws_control_plane.sh

@@ -230,6 +230,76 @@ and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:
 curl -X DELETE http://localhost:8010/provider/networks/{vpc_id}
 ```
 
+## Demo: Plan -> Deploy -> Validate -> Fail -> Reconcile
+
+This AWS demo shows CloudNet acting as a control plane: the topology is desired
+state, AWS is actual state, and reconcile repairs drift.
+
+EC2 can cost money. Keep `AWS_MAX_INSTANCES_PER_DEPLOY` low, run the demo in a
+low-cost region, and clean up the VPC when you are done.
+
+Start the API with AWS configured:
+
+```bash
+make dev
+make check-api
+```
+
+Run the demo:
+
+```bash
+make demo-aws-control-plane
+```
+
+Or run the script directly against a non-default API URL:
+
+```bash
+CLOUDNET_API_BASE_URL=http://127.0.0.1:8010 scripts/demo_aws_control_plane.sh
+```
+
+The demo creates a three-node topology:
+
+```text
+frontend -> backend -> db
+```
+
+It creates two subnets, two ICMP firewall rules, deploys AWS resources, validates
+connectivity, stops the `backend` node, validates failure, reconciles, and
+validates recovery.
+
+Expected output snippets:
+
+```text
+==> Planning topology without deploying
+...
+==> Deploying topology
+"status": "ACTIVE"
+...
+==> Validating baseline connectivity (expected PASSED)
+"status": "PASSED"
+...
+==> Validating after failure (expected FAILED)
+"status": "FAILED"
+...
+==> Reconciling desired state to actual state
+"status": "RECONCILED"
+...
+==> Validating after reconcile (expected PASSED)
+"status": "PASSED"
+```
+
+To have the script clean up the AWS VPC at the end:
+
+```bash
+CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
+```
+
+Manual cleanup uses the VPC ID printed by the demo:
+
+```bash
+curl -X DELETE http://127.0.0.1:8010/provider/networks/{vpc_id}
+```
+
 ## Local Development
 
 Install backend dependencies:

@@ -28,12 +28,13 @@ if [[ "${status}" != "ok" ]]; then
 fi
 echo "API health: ok"
 
-openstack_health="$(get_json "/openstack/health")"
-connected="$(jq -r '.connected // false' <<<"${openstack_health}")"
+provider_health="$(get_json "/provider/health")"
+provider="$(jq -r '.provider // "unknown"' <<<"${provider_health}")"
+connected="$(jq -r '.connected // false' <<<"${provider_health}")"
 if [[ "${connected}" != "true" ]]; then
-  echo "OpenStack health check failed: ${openstack_health}" >&2
+  echo "Provider health check failed: ${provider_health}" >&2
   exit 1
 fi
-echo "OpenStack health: connected"
+echo "Provider health (${provider}): connected"
 
 echo "CloudNet API is ready"
