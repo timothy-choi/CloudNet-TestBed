@@ -372,6 +372,16 @@ class AWSProvider(BaseProvider):
             ) from exc
         return str(instance.get("State", {}).get("Name", "unknown"))
 
+    def wait_for_server_running(self, server_id: str) -> None:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            ec2.get_waiter("instance_running").wait(InstanceIds=[server_id])
+        except self._client_error_class() as exc:
+            raise RuntimeError(
+                f"AWS instance wait failed: {self._error_detail(exc)}"
+            ) from exc
+
     def get_server_fixed_ip(
         self,
         server_id: str,

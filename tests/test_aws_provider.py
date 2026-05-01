@@ -818,6 +818,18 @@ def test_aws_stop_and_start_instance(monkeypatch) -> None:
     assert fake_aws.started_instances == ["i-created"]
 
 
+def test_aws_wait_for_instance_running(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+
+    AWSProvider().wait_for_server_running("i-created")
+
+    assert fake_aws.waits[-1] == {
+        "waiter_name": "instance_running",
+        "InstanceIds": ["i-created"],
+    }
+
+
 def test_aws_security_group_rules_ignore_duplicates(monkeypatch) -> None:
     set_aws_env(monkeypatch)
     monkeypatch.setenv("AWS_ALLOW_CREATE_INSTANCES", "true")

@@ -13,6 +13,11 @@ from app.services.connectivity_service import (
     list_connectivity_tests,
     serialize_connectivity_test,
 )
+from app.services.control_plane_service import (
+    ControlPlaneError,
+    plan_topology,
+    reconcile_topology,
+)
 from app.services.deployment_service import (
     DeploymentAlreadyExistsError,
     DeploymentError,
@@ -129,6 +134,36 @@ def deploy_topology_endpoint(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DeploymentError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/{topology_id}/plan")
+def plan_topology_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return plan_topology(topology)
+    except ControlPlaneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{topology_id}/reconcile")
+def reconcile_topology_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return reconcile_topology(session, topology)
+    except ControlPlaneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{topology_id}/resources")

@@ -145,8 +145,8 @@ implemented yet.
 
 AWS is the practical real-infrastructure provider for the MVP. Start with
 health and list operations before provisioning resources. The current AWS
-provider can create and delete tagged VPC/subnet pairs, but it does not create
-EC2 instances or NAT Gateways yet.
+provider can create and delete tagged VPC/subnet/EC2 resources, but it does not
+create NAT Gateways yet.
 
 Costs can start as soon as AWS resources are created outside CloudNet. Use a
 low-cost region and instance type, keep experiments small, and clean up
@@ -187,6 +187,30 @@ create NAT Gateways, load balancers, or Elastic IPs.
 AWS connectivity validation uses Systems Manager Run Command instead of public
 SSH. Instances need an IAM role with `AmazonSSMManagedInstanceCore`, and the AMI
 must have SSM Agent installed, such as Amazon Linux 2023.
+
+## Control Plane Behavior
+
+CloudNet now separates desired state from actual state. The desired state is the
+stored topology: hosts, links, and subnets. The actual state is the provider
+resources recorded in the database, such as AWS VPCs, subnets, security groups,
+and EC2 instances.
+
+Use `GET /topologies/{topology_id}/plan` to compile a topology into a deployment
+plan without calling AWS or creating resources.
+
+Use `POST /topologies/{topology_id}/reconcile` to compare stored AWS instance
+resources with AWS. Reconcile repairs stopped EC2 instances by starting them,
+waits until repaired instances are running, then runs the existing validation
+flow. It does not create new resources or recreate deleted instances in this
+MVP.
+
+Example control-plane loop:
+
+```text
+deploy -> PASS
+stop node -> FAIL
+reconcile -> PASS
+```
 
 CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
 default VPCs. Cleanup is required after demos to terminate CloudNet instances

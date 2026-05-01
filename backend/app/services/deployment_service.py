@@ -66,6 +66,10 @@ def list_topology_resources(
     return list(session.exec(statement).all())
 
 
+def compile_deployment_plan(topology: Topology) -> dict[str, Any]:
+    return compile_topology(_topology_to_input(topology))
+
+
 def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
     if topology.id is None:
         raise DeploymentError("topology must be saved before deployment")
@@ -76,7 +80,7 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
             "topology is already deployed; delete existing resources before redeploying"
         )
 
-    plan = compile_topology(_topology_to_input(topology))
+    plan = compile_deployment_plan(topology)
     created_resources: list[DeploymentResource] = []
     response_resources: list[dict[str, Any]] = []
     network_ids_by_name: dict[str, str] = {}

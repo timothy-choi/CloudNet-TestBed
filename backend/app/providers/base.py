@@ -74,6 +74,9 @@ class BaseProvider(ABC):
     def get_server_status(self, server_id: str) -> str:
         raise NotImplementedError
 
+    def wait_for_server_running(self, server_id: str) -> None:
+        raise NotImplementedError
+
     def get_server_fixed_ip(
         self,
         server_id: str,
