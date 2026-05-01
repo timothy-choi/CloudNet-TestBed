@@ -69,6 +69,8 @@ def compile_topology(topology: dict[str, Any]) -> dict[str, Any]:
                 f"link {i} subnet {si!r} overlaps link {j} subnet {sj!r}"
             )
 
+    _reject_cycles(parsed_links)
+
     networks: list[dict[str, Any]] = []
     for index, from_node, to_node, subnet, _net in parsed_links:
         networks.append(
@@ -124,3 +126,41 @@ def compile_topology(topology: dict[str, Any]) -> dict[str, Any]:
         "servers": servers,
         "firewall_rules": compiled_firewall_rules,
     }
+
+
+def _reject_cycles(
+    parsed_links: list[tuple[int, str, str, str, ipaddress._BaseNetwork]],
+) -> None:
+    """Current support is paths/chains, not rings or arbitrary cyclic graphs."""
+    adjacency: dict[str, list[str]] = {}
+    link_counts: dict[str, int] = {}
+    for _index, from_node, to_node, _subnet, _net in parsed_links:
+        if from_node == to_node:
+            continue
+        adjacency.setdefault(from_node, []).append(to_node)
+        adjacency.setdefault(to_node, []).append(from_node)
+        link_counts[from_node] = link_counts.get(from_node, 0) + 1
+        link_counts[to_node] = link_counts.get(to_node, 0) + 1
+
+    for node_name, count in sorted(link_counts.items()):
+        if count > 2:
+            raise ValueError(
+                f"arbitrary mesh topology is unsupported: node '{node_name}' "
+                f"appears in {count} links"
+            )
+
+    visited: set[str] = set()
+
+    def visit(node_name: str, parent: str | None, path: list[str]) -> None:
+        visited.add(node_name)
+        for next_node in adjacency.get(node_name, []):
+            if next_node == parent:
+                continue
+            if next_node in visited:
+                cycle = " -> ".join(path + [node_name, next_node])
+                raise ValueError(f"cycle topology is unsupported: {cycle}")
+            visit(next_node, node_name, path + [node_name])
+
+    for node_name in list(adjacency):
+        if node_name not in visited:
+            visit(node_name, None, [])

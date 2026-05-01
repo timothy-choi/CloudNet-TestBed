@@ -1,4 +1,4 @@
-.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery demo-aws-control-plane demo-mock demo-scenario scenario-test ci
+.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery demo-aws-control-plane demo-mock demo-scenario scenario-test topology-test ci
 
 PORT ?= 8010
 PYTHON ?= python3
@@ -45,4 +45,7 @@ demo-scenario:
 scenario-test:
 	./scripts/cloudnet run examples/backend-failure.yaml
 
-ci: lint-check test
+topology-test:
+	$(PYTHON) -m pytest tests/test_topology_validation_errors.py tests/test_topology_golden_examples.py tests/test_topology_supported_scenario.py
+
+ci: lint-check test topology-test

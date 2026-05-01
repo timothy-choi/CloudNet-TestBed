@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from app.services.topology_validate_service import summarize_compiled_plan, validate_topology_yaml_dict
+from app.services.topology_validate_service import (
+    summarize_compiled_plan,
+    validate_topology_yaml_dict,
+)
 from app.topology_compiler import compile_topology
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,43 +25,64 @@ def _load(name: str) -> dict:
     ("filename", "expected"),
     [
         (
-            "two-node.yaml",
+            "valid-two-node.yaml",
             {
                 "vpc_count": 1,
                 "subnet_count": 1,
                 "instance_count": 2,
                 "firewall_rule_count": 0,
-                "warning_min": 0,
+                "warnings": [],
             },
         ),
         (
-            "three-tier.yaml",
+            "valid-three-tier.yaml",
             {
                 "vpc_count": 1,
                 "subnet_count": 2,
                 "instance_count": 3,
                 "firewall_rule_count": 2,
-                "warning_min": 1,
+                "warnings": [
+                    "multi-homed node backend appears in multiple links; "
+                    "attached to first subnet only"
+                ],
             },
         ),
         (
-            "multi-subnet-warning.yaml",
+            "valid-multi-subnet-chain.yaml",
             {
                 "vpc_count": 1,
-                "subnet_count": 2,
-                "instance_count": 3,
+                "subnet_count": 3,
+                "instance_count": 4,
                 "firewall_rule_count": 0,
-                "warning_min": 1,
+                "warnings": [
+                    "multi-homed node api appears in multiple links; "
+                    "attached to first subnet only",
+                    "multi-homed node worker appears in multiple links; "
+                    "attached to first subnet only",
+                ],
             },
         ),
         (
-            "firewall-icmp.yaml",
+            "valid-firewall-icmp.yaml",
             {
                 "vpc_count": 1,
                 "subnet_count": 1,
                 "instance_count": 2,
                 "firewall_rule_count": 1,
-                "warning_min": 0,
+                "warnings": [],
+            },
+        ),
+        (
+            "partial-multihomed-warning.yaml",
+            {
+                "vpc_count": 1,
+                "subnet_count": 2,
+                "instance_count": 3,
+                "firewall_rule_count": 0,
+                "warnings": [
+                    "multi-homed node fe appears in multiple links; "
+                    "attached to first subnet only"
+                ],
             },
         ),
     ],
@@ -67,13 +91,12 @@ def test_golden_topology_plan_counts(filename: str, expected: dict) -> None:
     data = _load(filename)
     plan = compile_topology(data)
     summary = summarize_compiled_plan(plan)
-    assert summary["vpc_count"] == expected["vpc_count"]
-    assert summary["subnet_count"] == expected["subnet_count"]
-    assert summary["instance_count"] == expected["instance_count"]
-    assert summary["firewall_rule_count"] == expected["firewall_rule_count"]
-    assert len(summary["warnings"]) >= expected["warning_min"]
+    assert summary == expected
 
     validated = validate_topology_yaml_dict(data)
     assert validated["ok"] is True
+    assert validated["vpc_count"] == expected["vpc_count"]
     assert validated["subnet_count"] == expected["subnet_count"]
-    assert validated["warnings"] == summary["warnings"]
+    assert validated["instance_count"] == expected["instance_count"]
+    assert validated["firewall_rule_count"] == expected["firewall_rule_count"]
+    assert validated["warnings"] == expected["warnings"]

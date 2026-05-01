@@ -1,0 +1,7 @@
+# Invalid: NAT Gateway/ALB style node types are not enabled by default.
+name: invalid-unsupported-node-type
+nodes:
+  - name: alb
+    type: load_balancer
+links: []
+firewall_rules: []

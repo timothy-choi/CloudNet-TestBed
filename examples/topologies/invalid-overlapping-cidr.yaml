@@ -1,0 +1,17 @@
+# Invalid: link subnets must not overlap.
+name: invalid-overlapping-cidr
+nodes:
+  - name: x
+    type: host
+  - name: y
+    type: host
+  - name: z
+    type: host
+links:
+  - from: x
+    to: y
+    subnet: 10.70.1.0/24
+  - from: y
+    to: z
+    subnet: 10.70.1.128/25
+firewall_rules: []

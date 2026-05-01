@@ -1,40 +1,34 @@
-# Topology support matrix
+# Topology Support Matrix
 
-CloudNet compiles declarative **nodes**, **links** (each link implies a subnet segment), and **firewall_rules** into a provider plan. This document states what the **compiler and deploy path** support today and what is explicitly out of scope.
+CloudNet does not support arbitrary topology graphs. The current compiler and mock/provider lifecycle support a deliberately small set of topology classes, with warnings for one partial case and hard failures for unsupported graph shapes.
 
 ## Supported
 
-| Shape | Notes |
-|-------|--------|
-| **Two hosts, one subnet** | Single link between two `host` nodes with one IPv4 or IPv6 CIDR. |
-| **Three-tier chain** | e.g. `frontend → backend → db` as consecutive links; distinct subnets per hop. The **middle** host sits on **two** links (multi-homed) — CloudNet **warns** and attaches that instance to the **first** subnet only at deploy. |
-| **Multi-subnet topology** | Multiple links ⇒ multiple subnets in one logical VPC (AWS) or equivalent networks (mock/OpenStack). |
-| **Firewall rules with ICMP** | Rules with `protocol: icmp` between nodes (and TCP where implemented). |
-| **Node-down failure** | Scenario **`fail`** step targets a **`host`** node that exists in the topology. |
-| **Drift + reconcile** | **`drift`** / **`reconcile`** scenario steps against mock or provider-backed state. |
+| Class | Contract | Example |
+|-------|----------|---------|
+| Single link | Two `host` nodes joined by one link/subnet. | `examples/topologies/valid-two-node.yaml` |
+| Chain topology | A linear `frontend -> backend -> db` path. Middle hosts may appear in more than one link and emit the multi-homed warning described below. | `examples/topologies/valid-three-tier.yaml` |
+| Multi-subnet chain | A longer linear chain where each link creates a distinct subnet. | `examples/topologies/valid-multi-subnet-chain.yaml` |
+| Firewall rules with ICMP/TCP | `firewall_rules` support `protocol: icmp` and `protocol: tcp`; TCP rules may include `port`. | `examples/topologies/valid-firewall-icmp.yaml` |
+| Scenario lifecycle | Supported shapes are covered by mock scenario runs that create topology, plan, deploy, validate, inject `node_down` where applicable, detect drift, reconcile, and validate again. | `tests/test_topology_supported_scenario.py` |
 
-The golden tests under **`examples/topologies/`** lock in compile-time counts (VPC = 1 lab VPC, subnet = link count, instances = `host` count, firewall rules = rule count) and multi-home **warnings**.
+## Partially Supported
 
-## Partially supported
+| Class | Current behavior | Example |
+|-------|------------------|---------|
+| Multi-homed node | A `host` that appears in multiple links is accepted, but deploy attaches that instance to the first subnet only and emits a warning. CloudNet does not create multiple ENIs for it. | `examples/topologies/partial-multihomed-warning.yaml` |
 
-| Topic | Behavior |
+## Unsupported
+
+| Class | Behavior |
 |-------|----------|
-| **Multi-homed nodes** | A **host** appearing on **more than one link** is warned; deploy attaches the instance to the **first** subnet only (`multi_homed_warnings` in **`deployment_service`**). |
-| **`load_balancer` (or similar) node types** | Not a supported **`type`** unless implemented under **`SUPPORTED_NODE_TYPES`** in **`topology_compiler.py`**. |
-| **Custom Terraform import/deploy** | Export exists for inspection; treating Terraform as the source of truth for deploy is **future** work. |
+| Arbitrary mesh requiring multiple ENIs | Rejected when a node requires more than the documented partial two-link multi-home case; CloudNet does not model multiple network interfaces per host. |
+| Cycles/rings | Rejected by the compiler as unsupported topology classes. |
+| Cross-region topology | Not modeled in the topology schema. A deployment uses the configured provider region/session. |
+| Overlapping CIDRs | Rejected by the compiler. |
+| Unsupported node types unless explicitly enabled | Rejected unless the type is present in `SUPPORTED_NODE_TYPES` and provider code implements it. |
+| NAT Gateway/ALB by default | Not part of the default topology language and rejected as unsupported node types. |
 
-## Unsupported (by design / MVP)
+## Test Contract
 
-| Topic | Reason |
-|-------|--------|
-| **Arbitrary mesh with multiple ENIs per host** | Single attachment per host instance in the current AWS adapter; multi-home is warn-only. |
-| **NAT Gateway** | Not modeled in the topology schema; no dedicated resource type in the MVP compiler. |
-| **Application Load Balancer by default** | No ELB/ALB abstraction in the topology language unless added explicitly later. |
-| **Cross-region topologies** | Single region per provider session / deployment. |
-
-## Validation tooling
-
-- **`cloudnet validate-topology <file.yaml>`** — compile + quota + overlap checks; **no** deploy, **no** AWS credentials required.
-- **`GET /topologies/{id}/plan`** — same compile model after a topology is stored (requires API).
-
-See README **Supported Topologies** for links to examples and CI behavior.
+`make topology-test` runs validator, golden plan, and mock lifecycle coverage for the support matrix. The golden plan tests assert VPC count, subnet count, instance count, firewall rule count, and warnings for every accepted example.

@@ -1,0 +1,9 @@
+# Invalid: node names must be unique.
+name: invalid-duplicate-node
+nodes:
+  - name: dup
+    type: host
+  - name: dup
+    type: host
+links: []
+firewall_rules: []

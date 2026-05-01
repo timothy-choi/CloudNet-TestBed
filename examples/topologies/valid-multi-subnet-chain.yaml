@@ -1,0 +1,22 @@
+# Supported: longer chain with one subnet per hop.
+name: valid-multi-subnet-chain
+nodes:
+  - name: frontend
+    type: host
+  - name: api
+    type: host
+  - name: worker
+    type: host
+  - name: db
+    type: host
+links:
+  - from: frontend
+    to: api
+    subnet: 10.131.1.0/24
+  - from: api
+    to: worker
+    subnet: 10.131.2.0/24
+  - from: worker
+    to: db
+    subnet: 10.131.3.0/24
+firewall_rules: []

@@ -119,24 +119,25 @@ The mock provider simulates variable latency and optional packet loss (see **`CL
 
 ---
 
-## Supported topologies
+## Supported topology classes
 
-CloudNet compiles **nodes**, **links** (each link carries a **subnet** CIDR), and optional **firewall_rules** into a deployment-shaped plan. Which shapes are supported today, which emit warnings, and which are out of scope for the MVP are summarized in **[docs/topology-support.md](docs/topology-support.md)**.
+CloudNet compiles **nodes**, **links** (each link carries a **subnet** CIDR), and optional **firewall_rules** into a deployment-shaped plan. It does **not** claim arbitrary graph support. The supported, partially supported, and unsupported classes are defined in **[docs/topology-support.md](docs/topology-support.md)**.
 
 **Golden examples** (used by regression tests; **no AWS required**):
 
-- **`examples/topologies/two-node.yaml`** — two hosts, one subnet  
-- **`examples/topologies/three-tier.yaml`** — linear chain, ICMP rules  
-- **`examples/topologies/multi-subnet-warning.yaml`** — multi-homed warning path  
-- **`examples/topologies/firewall-icmp.yaml`** — ICMP firewall rules  
+- **`examples/topologies/valid-two-node.yaml`** — two hosts, one subnet
+- **`examples/topologies/valid-three-tier.yaml`** — linear chain, ICMP/TCP rules
+- **`examples/topologies/valid-multi-subnet-chain.yaml`** — multi-subnet chain
+- **`examples/topologies/valid-firewall-icmp.yaml`** — ICMP firewall rule
+- **`examples/topologies/partial-multihomed-warning.yaml`** — multi-homed warning path
 
 Validate a file locally (**compile + quotas + overlap checks**; does not call the cloud):
 
 ```bash
-./scripts/cloudnet validate-topology examples/topologies/three-tier.yaml
+./scripts/cloudnet validate-topology examples/topologies/valid-three-tier.yaml
 ```
 
-**`make ci`** runs golden and invalid topology tests alongside the rest of the suite.
+**`make topology-test`** runs validator, golden plan, and mock lifecycle coverage for the topology support matrix. **`make ci`** runs those tests alongside the rest of the suite.
 
 ---
 

@@ -1,0 +1,20 @@
+# Invalid: cycles/rings are not a supported topology class.
+name: invalid-cycle
+nodes:
+  - name: a
+    type: host
+  - name: b
+    type: host
+  - name: c
+    type: host
+links:
+  - from: a
+    to: b
+    subnet: 10.72.1.0/24
+  - from: b
+    to: c
+    subnet: 10.72.2.0/24
+  - from: c
+    to: a
+    subnet: 10.72.3.0/24
+firewall_rules: []

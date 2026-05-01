@@ -1,0 +1,12 @@
+# Supported: single host-to-host link.
+name: valid-two-node
+nodes:
+  - name: client-a
+    type: host
+  - name: client-b
+    type: host
+links:
+  - from: client-a
+    to: client-b
+    subnet: 10.50.1.0/24
+firewall_rules: []

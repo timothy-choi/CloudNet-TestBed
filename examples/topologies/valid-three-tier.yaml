@@ -1,0 +1,26 @@
+# Supported: frontend -> backend -> db chain.
+name: valid-three-tier
+nodes:
+  - name: frontend
+    type: host
+  - name: backend
+    type: host
+  - name: db
+    type: host
+links:
+  - from: frontend
+    to: backend
+    subnet: 10.130.1.0/24
+  - from: backend
+    to: db
+    subnet: 10.130.2.0/24
+firewall_rules:
+  - name: allow-fe-be-ping
+    protocol: icmp
+    from: frontend
+    to: backend
+  - name: allow-be-db-tcp
+    protocol: tcp
+    port: 5432
+    from: backend
+    to: db
