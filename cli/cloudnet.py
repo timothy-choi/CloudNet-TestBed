@@ -105,13 +105,57 @@ def load_scenario_yaml(path: Path) -> dict:
     return data
 
 
+def _format_scenario_step_line(step: dict) -> str:
+    label = step["step"]
+    result = step["result"]
+    ok = step.get("step_passed", False)
+
+    if label.startswith("fail "):
+        node = label.removeprefix("fail ").strip()
+        if result == "SUCCESS":
+            return f"fail {node}: injected"
+        return f"fail {node}: {result}"
+
+    if label == "reconcile":
+        if result == "RECONCILED":
+            return "reconcile: repaired"
+        return f"reconcile: {result}"
+
+    if label == "drift":
+        if result in ("DETECTED", "CLEAN"):
+            return f"drift: {result.lower()}"
+        return f"drift: {result}"
+
+    if label == "validate":
+        exp = step.get("expect")
+        if exp == "fail" and result == "FAILED" and ok:
+            return "validate: FAILED (expected)"
+        return f"validate: {result}"
+
+    return f"{label}: {result}"
+
+
+def _print_scenario_result(body: dict) -> None:
+    for step in body.get("steps", []):
+        sym = "✔" if step.get("step_passed") else "✖"
+        line = _format_scenario_step_line(step)
+        print(f"{sym} {line}")
+    print()
+    print(f"Scenario {body.get('scenario')!r}: {body.get('status')}")
+
+
 def cmd_run(client: httpx.Client, args: argparse.Namespace) -> None:
     path = Path(args.file)
     body = load_scenario_yaml(path)
     response = client.post("/scenarios/run", json=body)
     if response.status_code >= 400:
         sys.exit(f"scenario run failed: {response.status_code} {response.text}")
-    print(json.dumps(response.json(), indent=2))
+    data = response.json()
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        _print_scenario_result(data)
+    sys.exit(0 if data.get("status") == "PASSED" else 1)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -158,6 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create topology, deploy, and execute a scenario file",
     )
     p_run.add_argument("file", help="Scenario YAML (scenario, topology, steps)")
+    p_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Print raw JSON instead of step summary lines",
+    )
     p_run.set_defaults(func=cmd_run)
 
     return parser

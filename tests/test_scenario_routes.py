@@ -2,6 +2,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -11,6 +12,7 @@ from app.providers.mock_provider import MockProvider
 from app.services import connectivity_service
 from app.services import control_plane_service
 from app.services import deployment_service
+from app.services import drift_service
 from app.services import failure_service
 
 
@@ -41,6 +43,7 @@ def mock_stack(monkeypatch) -> MockProvider:
         failure_service,
         control_plane_service,
         connectivity_service,
+        drift_service,
     ):
         monkeypatch.setattr(module, "get_provider", lambda p=provider: p)
     monkeypatch.setattr(
@@ -97,6 +100,7 @@ def test_scenario_run_backend_failure_flow(client: TestClient, monkeypatch) -> N
                 {"validate": "all"},
                 {"fail": {"node": "client-b"}},
                 {"validate": {"expect": "fail"}},
+                {"drift": {"expect": "detected"}},
                 {"reconcile": True},
                 {"validate": {"expect": "pass"}},
             ],
@@ -108,19 +112,46 @@ def test_scenario_run_backend_failure_flow(client: TestClient, monkeypatch) -> N
     assert body["scenario"] == "backend_failure_test"
     assert body["status"] == "PASSED"
     assert body["topology_name"] == "scenario-two-host"
-    steps = [s["step"] for s in body["steps"]]
-    assert steps == [
+    steps = body["steps"]
+    assert [s["step"] for s in steps] == [
         "validate",
         "fail client-b",
         "validate",
+        "drift",
         "reconcile",
         "validate",
     ]
-    assert body["steps"][0]["result"] == "PASSED"
-    assert body["steps"][1]["result"] == "SUCCESS"
-    assert body["steps"][2]["result"] == "FAILED"
-    assert body["steps"][3]["result"] == "RECONCILED"
-    assert body["steps"][4]["result"] == "PASSED"
+    assert steps[0]["result"] == "PASSED"
+    assert steps[0]["step_passed"] is True
+    assert steps[1]["result"] == "SUCCESS"
+    assert steps[2]["result"] == "FAILED"
+    assert steps[2]["step_passed"] is True
+    assert steps[3]["result"] == "DETECTED"
+    assert steps[3]["step_passed"] is True
+    assert steps[4]["result"] == "RECONCILED"
+    assert steps[5]["result"] == "PASSED"
+
+
+def test_scenario_run_accepts_yaml_body(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+
+    payload = {
+        "scenario": {"name": "yaml_payload"},
+        "topology": {
+            "name": "scenario-yaml-body",
+            "nodes": [{"name": "solo", "type": "host"}],
+            "links": [{"from": "solo", "to": "solo", "subnet": "10.98.1.0/24"}],
+            "firewall_rules": [],
+        },
+        "steps": [{"validate": "all"}],
+    }
+    response = client.post(
+        "/scenarios/run",
+        content=yaml.dump(payload),
+        headers={"Content-Type": "application/x-yaml"},
+    )
+    assert response.status_code == 200
+    assert response.json()["scenario"] == "yaml_payload"
 
 
 def test_scenario_run_rejects_bad_step(client: TestClient, monkeypatch) -> None:

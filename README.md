@@ -4,7 +4,7 @@ CloudNet TestBed is a small **control plane** for describing network lab topolog
 
 ### Test your system reliability on real cloud infrastructure
 
-CloudNet lets you define **failure scenarios** in YAML (desired topology plus ordered steps such as validate all links, stop a node, expect validation to fail, reconcile, expect validation to pass again). The API runs those steps sequentially using the same deploy, validate, failure injection, and reconcile paths as the interactive endpoints—no duplicate provisioning logic. Submit the scenario with **`POST /scenarios/run`**, or run **`./scripts/cloudnet run examples/backend-failure-scenario.yaml`** against a live API. With the mock provider and dev server running, try **`make demo-scenario`**.
+See **[Run reliability experiments](#run-reliability-experiments)** for scenario YAML, the scenario API, and **`make demo-scenario`**.
 
 **Languages:** Python (FastAPI, topology compiler, providers), Bash (demos and smoke scripts). A Go-based test runner is reserved for a later milestone.
 
@@ -61,7 +61,7 @@ CLOUDNET_PROVIDER=mock make dev
 make demo-mock
 ```
 
-Run an **end-to-end reliability scenario** (creates topology, deploys, runs validate / fail / reconcile steps from `examples/backend-failure-scenario.yaml`):
+Run an **end-to-end reliability scenario** (creates topology, deploys, runs steps from `examples/backend_failure.yaml`):
 
 ```bash
 CLOUDNET_PROVIDER=mock make dev
@@ -85,6 +85,16 @@ Optional: destroy the demo VPC at the end of the AWS script:
 ```bash
 CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
 ```
+
+---
+
+## Run reliability experiments
+
+CloudNet lets you define **failure scenarios** and execute them as one unit on **real or mock** cloud environments—no manual chaining of deploy, validate, break, and reconcile calls.
+
+- **Scenario file** — top-level keys `scenario` (with `name`), `topology` (same shape as other topology YAML), and `steps`. Each step is a single-key mapping, for example `validate: all`, `validate: { expect: pass | fail }`, `fail: { node: backend }`, `drift: { expect: detected | clean }`, and `reconcile: true`.
+- **Engine** — **`POST /scenarios/run`** creates the topology, deploys it, then runs steps in order using the same services as **`POST .../validate`**, **`POST .../failures/node-down`**, **`GET .../drift`** (via `detect_topology_drift`), and **`POST .../reconcile`**. Each step records `step_passed` for expectation checks. Request body may be **JSON** (default) or **YAML** with header `Content-Type: application/x-yaml`.
+- **CLI** — `./scripts/cloudnet run examples/backend_failure.yaml` prints a short step summary (✔ / ✖), exits **0** if the scenario **`status`** is **`PASSED`**, otherwise **1**. Use **`--json`** for raw API output.
 
 ---
 
@@ -118,6 +128,9 @@ pip install -r backend/requirements.txt
 
 # Create stored topology and deploy
 ./scripts/cloudnet apply examples/three-tier.yaml --deploy
+
+# Run a declarative reliability scenario (YAML: scenario + topology + steps)
+./scripts/cloudnet run examples/backend_failure.yaml
 
 # Allow exec on the API process
 export CLOUDNET_ALLOW_EXEC=true

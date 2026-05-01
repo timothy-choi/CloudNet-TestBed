@@ -8,4 +8,4 @@ echo "CloudNet scenario demo (expects API at ${API_BASE_URL})"
 echo "Recommended: CLOUDNET_PROVIDER=mock make dev"
 echo ""
 
-exec python3 "${ROOT}/cli/cloudnet.py" run "${ROOT}/examples/backend-failure-scenario.yaml"
+exec python3 "${ROOT}/cli/cloudnet.py" run "${ROOT}/examples/backend_failure.yaml"
