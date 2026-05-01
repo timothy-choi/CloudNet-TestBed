@@ -24,8 +24,38 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt
 
-      - name: Run compile check
-        run: python -m compileall backend/app
+      - name: Run lint and unit tests
+        run: make ci
 
-      - name: Run backend tests
-        run: cd backend && pytest
+      - name: Start mock API
+        env:
+          CLOUDNET_PROVIDER: mock
+        run: |
+          cd backend
+          uvicorn app.main:app --host 127.0.0.1 --port 8010 &
+          echo $! > ../uvicorn.pid
+
+      - name: Wait for API
+        env:
+          CLOUDNET_API_BASE_URL: http://127.0.0.1:8010
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS "${CLOUDNET_API_BASE_URL}/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Run mock control-plane demo
+        env:
+          CLOUDNET_PROVIDER: mock
+          CLOUDNET_API_BASE_URL: http://127.0.0.1:8010
+        run: make demo-mock
+
+      - name: Stop mock API
+        if: always()
+        run: |
+          if [ -f uvicorn.pid ]; then
+            kill "$(cat uvicorn.pid)" || true
+          fi

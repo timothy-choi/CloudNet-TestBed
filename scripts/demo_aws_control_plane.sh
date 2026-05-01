@@ -24,7 +24,10 @@ api_get() {
 
 api_post() {
   local path="$1"
-  local body="${2:-{}}"
+  local body="{}"
+  if [[ $# -ge 2 ]]; then
+    body="$2"
+  fi
   curl -fsS \
     -X POST "${API_BASE_URL}${path}" \
     -H "Content-Type: application/json" \

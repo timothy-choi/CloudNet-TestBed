@@ -80,7 +80,14 @@ def create_ping_test(
     try:
         provider = get_provider()
         target_fixed_ip = provider.get_server_fixed_ip(target_server_id)
-        if provider.name == "aws":
+        if provider.name == "mock":
+            target_status = provider.get_server_status(target_server_id)
+            if target_status != "running":
+                raise RuntimeError(
+                    f"mock ping failed: target {target_server_id} is {target_status}"
+                )
+            output = provider.run_ping(source_server_id, target_fixed_ip)
+        elif provider.name == "aws":
             output = provider.run_ping(source_server_id, target_fixed_ip)
         else:
             source_floating_ip = provider.get_or_create_floating_ip_for_server(

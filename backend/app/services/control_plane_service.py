@@ -62,15 +62,17 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
         raise ControlPlaneError("topology must be saved before reconcile")
 
     provider = get_provider()
-    if provider.name != "aws":
-        raise ControlPlaneError("reconcile is currently supported for AWS topologies")
+    if provider.name not in {"aws", "mock"}:
+        raise ControlPlaneError(
+            "reconcile is currently supported for AWS and mock topologies"
+        )
 
     actions: list[dict[str, str]] = []
     started_instances: list[str] = []
     resources = list_topology_resources(session, topology.id)
     drift = detect_topology_drift(session=session, topology=topology, provider=provider)
 
-    for resource in _aws_instance_resources(resources):
+    for resource in _repairable_instance_resources(resources, provider.name):
         try:
             status = provider.get_server_status(resource.openstack_id)
         except Exception:
@@ -106,7 +108,7 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
         provider.wait_for_server_running(instance_id)
 
     plan = compile_deployment_plan(topology)
-    if plan["firewall_rules"]:
+    if provider.name == "aws" and plan["firewall_rules"]:
         security_group_resource = _aws_security_group_resource(resources)
         if security_group_resource is None:
             raise ControlPlaneError("CloudNet security group has not been deployed")
@@ -134,13 +136,15 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
     }
 
 
-def _aws_instance_resources(
+def _repairable_instance_resources(
     resources: list[DeploymentResource],
+    provider_name: str,
 ) -> list[DeploymentResource]:
+    resource_type = "aws_instance" if provider_name == "aws" else "nova_server"
     return [
         resource
         for resource in resources
-        if resource.resource_type == "aws_instance"
+        if resource.resource_type == resource_type
     ]
 
 

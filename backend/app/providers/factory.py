@@ -6,6 +6,9 @@ from app.providers.openstack_provider import OpenStackProvider
 from app.providers.proxmox_provider import ProxmoxProvider
 
 
+_mock_provider = MockProvider()
+
+
 def get_provider() -> BaseProvider:
     provider = get_cloudnet_provider()
     if provider == "aws":
@@ -14,4 +17,4 @@ def get_provider() -> BaseProvider:
         return OpenStackProvider()
     if provider == "proxmox":
         return ProxmoxProvider()
-    return MockProvider()
+    return _mock_provider

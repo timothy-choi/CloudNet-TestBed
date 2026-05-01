@@ -103,6 +103,39 @@ CloudNet selects infrastructure with `CLOUDNET_PROVIDER`.
 If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when
 `OPENSTACK_ENABLED=true`; otherwise it uses the mock provider.
 
+## Run Locally Without AWS
+
+AWS is optional for local development and CI. Mock mode demonstrates the full
+CloudNet control-plane behavior safely without credentials and without creating
+billable infrastructure.
+
+Start CloudNet with the mock provider:
+
+```bash
+CLOUDNET_PROVIDER=mock make dev
+```
+
+In another terminal, run the no-AWS demo:
+
+```bash
+make demo-mock
+```
+
+The mock demo runs:
+
+```text
+plan -> deploy -> validate PASS -> node-down -> validate FAIL -> drift -> reconcile -> validate PASS -> events
+```
+
+Use AWS mode only when you intentionally want real infrastructure:
+
+```bash
+CLOUDNET_PROVIDER=aws make dev
+```
+
+AWS mode provisions real VPC, subnet, security group, and EC2 resources, which
+can cost money.
+
 ## OpenStack Setup
 
 Copy `.env.example` to `.env` and fill in your OpenStack credentials.

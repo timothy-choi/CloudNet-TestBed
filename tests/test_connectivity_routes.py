@@ -108,7 +108,10 @@ def seed_aws_instance_resources(client: TestClient, topology_id: int) -> None:
 
 
 def mock_openstack_for_ping(monkeypatch) -> None:
-    provider = MockProvider()
+    class OpenStackLikeProvider(MockProvider):
+        name = "openstack"
+
+    provider = OpenStackLikeProvider()
     monkeypatch.setattr(connectivity_service, "get_provider", lambda: provider)
     monkeypatch.setattr(
         provider,

@@ -24,10 +24,14 @@ def detect_topology_drift(
         raise DriftError("topology must be saved before drift detection")
 
     provider = provider or get_provider()
-    if provider.name != "aws":
-        raise DriftError("drift detection is currently supported for AWS topologies")
+    if provider.name not in {"aws", "mock"}:
+        raise DriftError(
+            "drift detection is currently supported for AWS and mock topologies"
+        )
 
     resources = list_topology_resources(session, topology.id)
+    server_resource_type = "aws_instance" if provider.name == "aws" else "nova_server"
+    subnet_resource_type = "aws_subnet" if provider.name == "aws" else "neutron_subnet"
     resources_by_type_name = {
         (resource.resource_type, resource.resource_name): resource
         for resource in resources
@@ -37,11 +41,11 @@ def detect_topology_drift(
     for node in topology.nodes:
         if node.type != "host":
             continue
-        resource = resources_by_type_name.get(("aws_instance", node.name))
+        resource = resources_by_type_name.get((server_resource_type, node.name))
         if resource is None:
             items.append(
                 _drift_item(
-                    resource_type="aws_instance",
+                    resource_type=server_resource_type,
                     name=node.name,
                     expected="running",
                     actual="missing",
@@ -55,7 +59,7 @@ def detect_topology_drift(
         except Exception:
             items.append(
                 _drift_item(
-                    resource_type="aws_instance",
+                    resource_type=server_resource_type,
                     name=node.name,
                     expected="running",
                     actual="missing",
@@ -67,7 +71,7 @@ def detect_topology_drift(
         if status != "running":
             items.append(
                 _drift_item(
-                    resource_type="aws_instance",
+                    resource_type=server_resource_type,
                     name=node.name,
                     expected="running",
                     actual=status,
@@ -76,18 +80,25 @@ def detect_topology_drift(
             )
 
     for resource in resources:
-        if resource.resource_type != "aws_subnet":
+        if resource.resource_type != subnet_resource_type:
             continue
         if not provider.resource_exists(resource.resource_type, resource.openstack_id):
             items.append(
                 _drift_item(
-                    resource_type="aws_subnet",
+                    resource_type=subnet_resource_type,
                     name=resource.resource_name,
                     expected="present",
                     actual="missing",
                     severity="critical",
                 )
             )
+
+    if provider.name != "aws":
+        return {
+            "topology_id": topology.id,
+            "drift_detected": bool(items),
+            "items": items,
+        }
 
     security_group_resource = _security_group_resource(resources)
     if security_group_resource is None:

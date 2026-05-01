@@ -13,7 +13,10 @@ require_command() {
 
 api_post() {
   local path="$1"
-  local body="${2:-{}}"
+  local body="{}"
+  if [[ $# -ge 2 ]]; then
+    body="$2"
+  fi
   curl -sS \
     -X POST "${API_BASE_URL}${path}" \
     -H "Content-Type: application/json" \

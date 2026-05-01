@@ -737,3 +737,67 @@ def test_events_are_returned_in_order_with_reverse_and_limit(
     ).json()["events"]
     assert len(latest) == 1
     assert latest[0]["status"] == "SUCCESS"
+
+
+def test_mock_control_plane_flow_deploy_validate_drift_reconcile_events(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "mock")
+    topology_id = create_secure_three_tier_topology(client)
+
+    deploy_response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert deploy_response.status_code == 200
+    assert deploy_response.json()["status"] == "ACTIVE"
+    resources = client.get(f"/topologies/{topology_id}/resources").json()["resources"]
+    assert [resource["type"] for resource in resources].count("neutron_subnet") == 2
+    assert [resource["type"] for resource in resources].count("nova_server") == 3
+
+    validation_response = client.post(f"/topologies/{topology_id}/validate")
+    assert validation_response.status_code == 200
+    assert validation_response.json()["status"] == "PASSED"
+
+    failure_response = client.post(
+        f"/topologies/{topology_id}/failures/node-down",
+        json={"node": "backend"},
+    )
+    assert failure_response.status_code == 200
+    assert failure_response.json()["status"] == "SUCCESS"
+
+    failed_validation = client.post(f"/topologies/{topology_id}/validate")
+    assert failed_validation.status_code == 200
+    assert failed_validation.json()["status"] == "FAILED"
+
+    drift_response = client.get(f"/topologies/{topology_id}/drift")
+    assert drift_response.status_code == 200
+    assert drift_response.json()["drift_detected"] is True
+    assert {
+        "resource_type": "nova_server",
+        "name": "backend",
+        "expected": "running",
+        "actual": "stopped",
+        "severity": "warning",
+    } in drift_response.json()["items"]
+
+    reconcile_response = client.post(f"/topologies/{topology_id}/reconcile")
+    assert reconcile_response.status_code == 200
+    assert reconcile_response.json()["status"] == "RECONCILED"
+    assert reconcile_response.json()["drift"]["drift_detected"] is True
+    assert {
+        "node": "backend",
+        "action": "start",
+        "result": "started",
+    } in reconcile_response.json()["actions"]
+
+    recovered_validation = client.post(f"/topologies/{topology_id}/validate")
+    assert recovered_validation.status_code == 200
+    assert recovered_validation.json()["status"] == "PASSED"
+
+    events = client.get(f"/topologies/{topology_id}/events").json()["events"]
+    event_types = [event["type"] for event in events]
+    assert "DEPLOY_COMPLETE" in event_types
+    assert "VALIDATION" in event_types
+    assert "FAILURE_INJECTED" in event_types
+    assert "DRIFT_DETECTED" in event_types
+    assert any(event["message"] == "Reconcile complete" for event in events)

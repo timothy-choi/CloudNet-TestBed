@@ -6,6 +6,9 @@ from app.providers.base import BaseProvider
 class MockProvider(BaseProvider):
     name = "mock"
 
+    def __init__(self) -> None:
+        self.server_statuses: dict[str, str] = {}
+
     def health(self) -> dict[str, Any]:
         return {
             "enabled": True,
@@ -83,10 +86,12 @@ class MockProvider(BaseProvider):
         network_id: str,
         subnet_id: str | None = None,
     ) -> dict[str, Any]:
+        server_id = f"mock-server-{name}"
+        self.server_statuses[server_id] = "running"
         return {
-            "id": f"mock-server-{name}",
+            "id": server_id,
             "name": name,
-            "status": "ACTIVE",
+            "status": "running",
             "addresses": {
                 network_id: [
                     {
@@ -99,10 +104,12 @@ class MockProvider(BaseProvider):
         }
 
     def stop_server(self, server_id: str) -> dict[str, Any]:
-        return {"id": server_id, "status": "SHUTOFF"}
+        self.server_statuses[server_id] = "stopped"
+        return {"id": server_id, "status": "stopped"}
 
     def start_server(self, server_id: str) -> dict[str, Any]:
-        return {"id": server_id, "status": "ACTIVE"}
+        self.server_statuses[server_id] = "running"
+        return {"id": server_id, "status": "running"}
 
     def delete_resource(
         self,
@@ -112,9 +119,7 @@ class MockProvider(BaseProvider):
         return {"id": resource_id, "type": resource_type, "deleted": True}
 
     def get_server_status(self, server_id: str) -> str:
-        if "stopped" in server_id or "shutoff" in server_id:
-            return "SHUTOFF"
-        return "ACTIVE"
+        return self.server_statuses.get(server_id, "running")
 
     def wait_for_server_running(self, server_id: str) -> None:
         return None
@@ -152,3 +157,11 @@ class MockProvider(BaseProvider):
 
     def get_or_create_floating_ip_for_server(self, server_id: str) -> str:
         return "203.0.113.10"
+
+    def run_ping(self, source_server_id: str, target_ip: str) -> str:
+        source_status = self.get_server_status(source_server_id)
+        if source_status != "running":
+            raise RuntimeError(
+                f"mock ping failed: source {source_server_id} is {source_status}"
+            )
+        return "3 packets transmitted, 3 received"
