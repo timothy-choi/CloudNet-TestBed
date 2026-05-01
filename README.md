@@ -212,6 +212,16 @@ stop node -> FAIL
 reconcile -> PASS
 ```
 
+## Firewall Policy as Topology
+
+Topologies can include `firewall_rules` to describe allowed traffic between
+logical nodes. CloudNet compiles those rules into AWS Security Group ingress
+rules on the shared `cloudnet-sg` used by CloudNet instances.
+
+For the MVP, `icmp` rules enable ping validation and `tcp` rules may include a
+`port`. If no firewall rules are provided, CloudNet preserves the existing
+default behavior and allows ICMP between CloudNet instances.
+
 CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
 default VPCs. Cleanup is required after demos to terminate CloudNet instances
 and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:

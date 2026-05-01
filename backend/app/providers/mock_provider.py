@@ -116,6 +116,23 @@ class MockProvider(BaseProvider):
             return "SHUTOFF"
         return "ACTIVE"
 
+    def wait_for_server_running(self, server_id: str) -> None:
+        return None
+
+    def ensure_firewall_rules(
+        self,
+        security_group_id: str,
+        firewall_rules: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": rule["name"],
+                "protocol": rule["protocol"],
+                "result": "created",
+            }
+            for rule in firewall_rules
+        ]
+
     def get_server_fixed_ip(
         self,
         server_id: str,

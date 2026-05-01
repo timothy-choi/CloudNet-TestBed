@@ -28,6 +28,7 @@ def test_valid_topology_compiles_correctly() -> None:
             {"name": "client-a", "type": "host"},
             {"name": "client-b", "type": "host"},
         ],
+        "firewall_rules": [],
     }
 
 

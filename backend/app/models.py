@@ -21,6 +21,10 @@ class Topology(SQLModel, table=True):
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+    firewall_rules: list["FirewallRule"] = Relationship(
+        back_populates="topology",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
     resources: list["DeploymentResource"] = Relationship(
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
@@ -52,6 +56,18 @@ class Link(SQLModel, table=True):
     subnet: str
 
     topology: Topology | None = Relationship(back_populates="links")
+
+
+class FirewallRule(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    topology_id: int = Field(foreign_key="topology.id")
+    name: str
+    protocol: str
+    port: int | None = None
+    from_node: str
+    to_node: str
+
+    topology: Topology | None = Relationship(back_populates="firewall_rules")
 
 
 class DeploymentResource(SQLModel, table=True):

@@ -12,10 +12,19 @@ class TopologyLink(BaseModel):
     subnet: str
 
 
+class TopologyFirewallRule(BaseModel):
+    name: str
+    protocol: str
+    port: int | None = None
+    from_node: str = Field(alias="from")
+    to: str
+
+
 class TopologyInput(BaseModel):
     name: str
     nodes: list[TopologyNode]
     links: list[TopologyLink] = []
+    firewall_rules: list[TopologyFirewallRule] = []
 
 
 class DeploymentNetwork(BaseModel):

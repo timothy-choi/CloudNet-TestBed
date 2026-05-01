@@ -114,16 +114,50 @@ def validate_topology_links(
 ) -> dict[str, Any]:
     results: list[dict[str, str]] = []
 
-    for link in topology.links:
-        try:
+    if topology.firewall_rules:
+        for rule in topology.firewall_rules:
+            if rule.protocol != "icmp":
+                results.append(
+                    {
+                        "source": rule.from_node,
+                        "target": rule.to_node,
+                        "status": "SKIPPED",
+                    }
+                )
+                continue
+
             test = create_ping_test(
                 session=session,
                 topology=topology,
-                source=link.from_node,
-                target=link.to_node,
+                source=rule.from_node,
+                target=rule.to_node,
             )
-        except ConnectivityTestError as exc:
-            raise ConnectivityTestError(str(exc)) from exc
+            results.append(
+                {
+                    "source": rule.from_node,
+                    "target": rule.to_node,
+                    "status": test.status,
+                }
+            )
+
+        overall_status = (
+            "FAILED"
+            if any(result["status"] == "FAILED" for result in results)
+            else "PASSED"
+        )
+        return {
+            "topology_id": topology.id,
+            "status": overall_status,
+            "results": results,
+        }
+
+    for link in topology.links:
+        test = create_ping_test(
+            session=session,
+            topology=topology,
+            source=link.from_node,
+            target=link.to_node,
+        )
 
         results.append(
             {

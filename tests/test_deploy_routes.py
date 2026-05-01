@@ -659,3 +659,100 @@ def test_aws_deploy_creates_subnet_per_link_and_uses_first_host_subnet(
         "multi-homed node backend appears in multiple links; "
         "attached to first subnet only"
     ]
+
+
+def test_aws_deploy_applies_firewall_rules_to_security_group(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    class AWSLikeProvider(MockProvider):
+        name = "aws"
+
+        def max_instances_per_deploy(self) -> int:
+            return 2
+
+    provider = AWSLikeProvider()
+    firewall_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(deployment_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(
+        provider,
+        "create_network",
+        lambda name, cidr=None: {"id": "vpc-1", "name": name, "cidr": cidr},
+    )
+    monkeypatch.setattr(
+        provider,
+        "create_subnet",
+        lambda network_id, name, cidr: {
+            "id": "subnet-1",
+            "name": name,
+            "cidr": cidr,
+            "vpc_id": network_id,
+        },
+    )
+    monkeypatch.setattr(
+        provider,
+        "create_server",
+        lambda name, network_id, subnet_id=None: {
+            "id": f"i-{name}",
+            "name": name,
+            "status": "pending",
+            "security_group_id": "sg-1",
+        },
+    )
+
+    def ensure_firewall_rules(security_group_id, firewall_rules):
+        firewall_calls.append(
+            {
+                "security_group_id": security_group_id,
+                "firewall_rules": firewall_rules,
+            }
+        )
+        return [
+            {
+                "name": firewall_rules[0]["name"],
+                "protocol": firewall_rules[0]["protocol"],
+                "result": "created",
+            }
+        ]
+
+    monkeypatch.setattr(provider, "ensure_firewall_rules", ensure_firewall_rules)
+
+    response = client.post(
+        "/topologies",
+        json={
+            "name": "deploy-test",
+            "nodes": [
+                {"name": "client-a", "type": "host"},
+                {"name": "client-b", "type": "host"},
+            ],
+            "links": [
+                {"from": "client-a", "to": "client-b", "subnet": "10.120.1.0/24"},
+            ],
+            "firewall_rules": [
+                {
+                    "name": "allow-client-ping",
+                    "protocol": "icmp",
+                    "from": "client-a",
+                    "to": "client-b",
+                }
+            ],
+        },
+    )
+    topology_id = response.json()["id"]
+
+    response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert response.status_code == 200
+    assert firewall_calls == [
+        {
+            "security_group_id": "sg-1",
+            "firewall_rules": [
+                {
+                    "name": "allow-client-ping",
+                    "protocol": "icmp",
+                    "from": "client-a",
+                    "to": "client-b",
+                }
+            ],
+        }
+    ]

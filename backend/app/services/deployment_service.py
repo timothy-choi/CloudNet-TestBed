@@ -34,6 +34,16 @@ def _topology_to_input(topology: Topology) -> dict[str, Any]:
             }
             for link in topology.links
         ],
+        "firewall_rules": [
+            {
+                "name": rule.name,
+                "protocol": rule.protocol,
+                "port": rule.port,
+                "from": rule.from_node,
+                "to": rule.to_node,
+            }
+            for rule in topology.firewall_rules
+        ],
     }
 
 
@@ -315,6 +325,23 @@ def _deploy_aws_resources(
             created_resources=created_resources,
             response_resources=response_resources,
         )
+
+    if plan["firewall_rules"]:
+        security_group_id = _aws_security_group_id(created_resources)
+        if security_group_id is None:
+            raise RuntimeError("AWS deployment did not create a CloudNet security group")
+        provider.ensure_firewall_rules(
+            security_group_id=security_group_id,
+            firewall_rules=plan["firewall_rules"],
+        )
+
+
+def _aws_security_group_id(resources: list[DeploymentResource]) -> str | None:
+    for resource in resources:
+        if resource.resource_type == "aws_security_group":
+            return resource.openstack_id
+    return None
+
 
 def _network_id_for_node(
     node_name: str,

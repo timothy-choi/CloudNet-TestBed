@@ -388,6 +388,33 @@ class AWSProvider(BaseProvider):
                 f"AWS instance wait failed: {self._error_detail(exc)}"
             ) from exc
 
+    def ensure_firewall_rules(
+        self,
+        security_group_id: str,
+        firewall_rules: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        results = []
+        for rule in firewall_rules:
+            permission = self._firewall_rule_to_ip_permission(
+                security_group_id=security_group_id,
+                rule=rule,
+            )
+            result = self._ensure_security_group_permission(
+                ec2=ec2,
+                security_group_id=security_group_id,
+                permission=permission,
+            )
+            results.append(
+                {
+                    "name": rule["name"],
+                    "protocol": rule["protocol"],
+                    "result": result,
+                }
+            )
+        return results
+
     def get_server_fixed_ip(
         self,
         server_id: str,
@@ -748,14 +775,55 @@ class AWSProvider(BaseProvider):
             )
 
         for permission in permissions:
-            try:
-                ec2.authorize_security_group_ingress(
-                    GroupId=security_group_id,
-                    IpPermissions=[permission],
-                )
-            except self._client_error_class() as exc:
-                if "InvalidPermission.Duplicate" not in self._error_detail(exc):
-                    raise
+            self._ensure_security_group_permission(
+                ec2=ec2,
+                security_group_id=security_group_id,
+                permission=permission,
+            )
+
+    def _firewall_rule_to_ip_permission(
+        self,
+        security_group_id: str,
+        rule: dict[str, Any],
+    ) -> dict[str, Any]:
+        protocol = rule["protocol"]
+        if protocol == "icmp":
+            return {
+                "IpProtocol": "icmp",
+                "FromPort": -1,
+                "ToPort": -1,
+                "UserIdGroupPairs": [{"GroupId": security_group_id}],
+            }
+        if protocol == "tcp":
+            from_port = 0
+            to_port = 65535
+            if rule.get("port") is not None:
+                from_port = int(rule["port"])
+                to_port = from_port
+            return {
+                "IpProtocol": "tcp",
+                "FromPort": from_port,
+                "ToPort": to_port,
+                "UserIdGroupPairs": [{"GroupId": security_group_id}],
+            }
+        raise RuntimeError(f"unsupported firewall protocol: {protocol}")
+
+    def _ensure_security_group_permission(
+        self,
+        ec2: Any,
+        security_group_id: str,
+        permission: dict[str, Any],
+    ) -> str:
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=security_group_id,
+                IpPermissions=[permission],
+            )
+            return "created"
+        except self._client_error_class() as exc:
+            if "InvalidPermission.Duplicate" in self._error_detail(exc):
+                return "skipped"
+            raise
 
     def _delete_cloudnet_security_groups(self, ec2: Any, vpc_id: str) -> list[str]:
         groups = ec2.describe_security_groups(

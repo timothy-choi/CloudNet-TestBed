@@ -47,6 +47,7 @@ def plan_topology(topology: Topology) -> dict[str, Any]:
             "security_groups": [
                 {"name": "cloudnet-sg"},
             ],
+            "firewall_rules": compiled["firewall_rules"],
         },
     }
     warnings = multi_homed_warnings(compiled)
@@ -65,10 +66,9 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
 
     actions: list[dict[str, str]] = []
     started_instances: list[str] = []
+    resources = list_topology_resources(session, topology.id)
 
-    for resource in _aws_instance_resources(
-        list_topology_resources(session, topology.id)
-    ):
+    for resource in _aws_instance_resources(resources):
         try:
             status = provider.get_server_status(resource.openstack_id)
         except Exception:
@@ -103,6 +103,24 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
     for instance_id in started_instances:
         provider.wait_for_server_running(instance_id)
 
+    plan = compile_deployment_plan(topology)
+    if plan["firewall_rules"]:
+        security_group_resource = _aws_security_group_resource(resources)
+        if security_group_resource is None:
+            raise ControlPlaneError("CloudNet security group has not been deployed")
+        for result in provider.ensure_firewall_rules(
+            security_group_id=security_group_resource.openstack_id,
+            firewall_rules=plan["firewall_rules"],
+        ):
+            if result["result"] == "created":
+                actions.append(
+                    {
+                        "resource": "cloudnet-sg",
+                        "action": "restore_firewall_rule",
+                        "result": "created",
+                    }
+                )
+
     validation_status = _run_default_validation(session=session, topology=topology)
     actions.append({"action": "validate", "result": validation_status})
 
@@ -121,6 +139,15 @@ def _aws_instance_resources(
         for resource in resources
         if resource.resource_type == "aws_instance"
     ]
+
+
+def _aws_security_group_resource(
+    resources: list[DeploymentResource],
+) -> DeploymentResource | None:
+    for resource in resources:
+        if resource.resource_type == "aws_security_group":
+            return resource
+    return None
 
 
 def _run_default_validation(session: Session, topology: Topology) -> str:

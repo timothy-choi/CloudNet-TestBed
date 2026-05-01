@@ -848,6 +848,74 @@ def test_aws_security_group_rules_ignore_duplicates(monkeypatch) -> None:
     assert server["id"] == "i-created"
 
 
+def test_aws_firewall_rule_creates_security_group_ingress(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = mock_boto3(monkeypatch)
+
+    results = AWSProvider().ensure_firewall_rules(
+        "sg-created",
+        [
+            {
+                "name": "allow-client-ping",
+                "protocol": "icmp",
+                "from": "client-a",
+                "to": "client-b",
+            }
+        ],
+    )
+
+    assert results == [
+        {"name": "allow-client-ping", "protocol": "icmp", "result": "created"}
+    ]
+    assert fake_aws.ingress_permissions == [
+        {
+            "IpProtocol": "icmp",
+            "FromPort": -1,
+            "ToPort": -1,
+            "UserIdGroupPairs": [{"GroupId": "sg-created"}],
+        }
+    ]
+
+
+def test_aws_duplicate_firewall_rule_is_skipped(monkeypatch) -> None:
+    set_aws_env(monkeypatch)
+    fake_aws = FakeAWS()
+
+    class DuplicateRuleEC2(FakeEC2):
+        def authorize_security_group_ingress(self, GroupId, IpPermissions):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "InvalidPermission.Duplicate",
+                        "Message": "already exists",
+                    }
+                },
+                "AuthorizeSecurityGroupIngress",
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        SimpleNamespace(client=lambda service_name, **kwargs: DuplicateRuleEC2(fake_aws)),
+    )
+
+    results = AWSProvider().ensure_firewall_rules(
+        "sg-created",
+        [
+            {
+                "name": "allow-client-ping",
+                "protocol": "icmp",
+                "from": "client-a",
+                "to": "client-b",
+            }
+        ],
+    )
+
+    assert results == [
+        {"name": "allow-client-ping", "protocol": "icmp", "result": "skipped"}
+    ]
+
+
 def test_provider_networks_delete_removes_subnets_before_vpc(monkeypatch) -> None:
     set_aws_env(monkeypatch)
     fake_aws = mock_boto3(monkeypatch)

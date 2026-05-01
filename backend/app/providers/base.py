@@ -77,6 +77,13 @@ class BaseProvider(ABC):
     def wait_for_server_running(self, server_id: str) -> None:
         raise NotImplementedError
 
+    def ensure_firewall_rules(
+        self,
+        security_group_id: str,
+        firewall_rules: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
     def get_server_fixed_ip(
         self,
         server_id: str,

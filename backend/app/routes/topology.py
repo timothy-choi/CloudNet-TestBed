@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import Link, Node, Topology
+from app.models import FirewallRule, Link, Node, Topology
 from app.schemas import NodeFailureRequest, PingTestRequest, TopologyInput
 from app.services.connectivity_service import (
     ConnectivityTestError,
@@ -59,6 +59,17 @@ def serialize_topology(topology: Topology) -> dict[str, Any]:
             }
             for link in topology.links
         ],
+        "firewall_rules": [
+            {
+                "id": rule.id,
+                "name": rule.name,
+                "protocol": rule.protocol,
+                "port": rule.port,
+                "from": rule.from_node,
+                "to": rule.to_node,
+            }
+            for rule in topology.firewall_rules
+        ],
     }
 
 
@@ -94,6 +105,18 @@ def create_topology(
                 from_node=link["from"],
                 to_node=link["to"],
                 subnet=link["subnet"],
+            )
+        )
+
+    for rule in topology_data["firewall_rules"]:
+        session.add(
+            FirewallRule(
+                topology_id=topology.id,
+                name=rule["name"],
+                protocol=rule["protocol"],
+                port=rule.get("port"),
+                from_node=rule["from"],
+                to_node=rule["to"],
             )
         )
 
