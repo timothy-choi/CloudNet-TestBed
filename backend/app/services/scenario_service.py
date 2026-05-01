@@ -22,6 +22,7 @@ from app.services.control_plane_service import ControlPlaneError, reconcile_topo
 from app.services.deployment_service import (
     DeploymentAlreadyExistsError,
     DeploymentError,
+    cleanup_topology_deployment,
     deploy_topology,
 )
 from app.services.drift_service import DriftError, detect_topology_drift
@@ -56,6 +57,11 @@ class _DriftStep:
 
 @dataclass(frozen=True)
 class _ReconcileStep:
+    pass
+
+
+@dataclass(frozen=True)
+class _CleanupStep:
     pass
 
 
@@ -95,11 +101,18 @@ def parse_scenario_steps(raw_steps: list[Any]) -> list[Any]:
             if not isinstance(val, dict):
                 raise ScenarioError(f"steps[{index}] drift must be an object")
             exp = val.get("expect")
+            if exp == "none":
+                exp = "clean"
             if exp not in ("detected", "clean"):
                 raise ScenarioError(
-                    f"steps[{index}] drift.expect must be 'detected' or 'clean'"
+                    f"steps[{index}] drift.expect must be 'detected', 'clean', or 'none'"
                 )
             out.append(_DriftStep(expect=str(exp)))
+        elif key == "cleanup":
+            if val is True:
+                out.append(_CleanupStep())
+            else:
+                raise ScenarioError(f"steps[{index}] cleanup must be true")
         elif key == "reconcile":
             if val is True:
                 out.append(_ReconcileStep())
@@ -535,6 +548,32 @@ class ScenarioRunner:
                         actual=actual,
                         step_passed=ok,
                         duration_ms=_elapsed_ms(t_step),
+                    )
+                )
+                if not ok:
+                    overall_ok = False
+
+            elif isinstance(step, _CleanupStep):
+                try:
+                    result = cleanup_topology_deployment(session, topology)
+                    actual = str(result.get("status", ""))
+                    ok = actual in ("CLEANED", "SKIPPED")
+                    msg = result.get("detail") if actual == "SKIPPED" else None
+                except DeploymentError as exc:
+                    actual = "FAILED"
+                    ok = False
+                    msg = str(exc)
+
+                topology = _load_topology(session, topology.id)
+                step_records.append(
+                    _step_record(
+                        name="cleanup",
+                        action="cleanup",
+                        expected="CLEANED",
+                        actual=actual,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_step),
+                        message=msg,
                     )
                 )
                 if not ok:

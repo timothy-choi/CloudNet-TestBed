@@ -1,14 +1,20 @@
 # CloudNet Testbed
 
-CloudNet is a **reliability testing control plane** for cloud lab networks: describe a topology, run **declarative scenarios** (deploy, validate, inject failures, check drift, reconcile), and read structured experiment reports plus an **event timeline** per topology. The **mock** provider runs full flows without AWS; **AWS** targets real VPCs and instances.
+CloudNet is a **reliability experiment runner** for cloud infrastructure. Describe a topology and an ordered **scenario** (deploy, validate, faults, drift, reconcile, optional cleanup); run one command and get a structured report plus the **event timeline** and persisted experiment record.
+
+**Primary command:**
+
+```bash
+./scripts/cloudnet run examples/backend-failure.yaml
+```
+
+Use **`CLOUDNET_PROVIDER=mock`** with **`make dev`** to run end-to-end **without AWS credentials**. The mock provider uses the same scenario engine as AWS.
 
 **Languages:** Python (FastAPI, topology compiler, providers), Bash (demos).
 
 ---
 
 ## Quick start — scenarios
-
-The primary workflow is one command while the API is running:
 
 ```bash
 pip install -r backend/requirements.txt
@@ -18,12 +24,12 @@ CLOUDNET_PROVIDER=mock make dev
 In another terminal:
 
 ```bash
-./scripts/cloudnet run examples/backend_failure.yaml
+./scripts/cloudnet run examples/backend-failure.yaml
 ```
 
-Use **`make demo-scenario`** for the same file with a short banner. Exit code **0** means the scenario **`PASSED`**.
+Use **`make demo-scenario`** for the same example with a short banner. Exit code **0** means **`PASSED`**, **1** means **`FAILED`** or HTTP error.
 
-The JSON response includes **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, per-step results, **`event_timeline_url`** (path to **`GET /topologies/{id}/events`**), and **`scenario_run_id`** for **`GET /scenarios/{id}/results`**.
+The API returns **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, **`steps`**, **`event_timeline_url`**, and **`scenario_run_id`** (**`GET /scenarios/{id}/results`**).
 
 ---
 
@@ -44,8 +50,9 @@ Three top-level keys:
 | **`deploy`** | `deploy: true` | Calls the same **`deploy_topology`** path as **`POST /topologies/{id}/deploy`**. If your scenario has **no** `deploy` step, CloudNet deploys once automatically before other steps (backward compatible). |
 | **`validate`** | `validate: all` or `validate: { expect: pass \| fail }` | Connectivity validation |
 | **`fail`** | `fail: { node: backend }` | Node-down / stop instance |
-| **`drift`** | `drift: { expect: detected \| clean }` | Drift detection vs expectation |
+| **`drift`** | `drift: { expect: detected \| clean \| none }` | `none` means no drift (alias for **clean**). |
 | **`reconcile`** | `reconcile: true` | Same as **`POST /topologies/{id}/reconcile`** |
+| **`cleanup`** | `cleanup: true` *(optional)* | Tear down deployment resources (VPC delete on AWS; `delete_resource` per row on mock). Use **last** if included. |
 
 Submit scenarios with **`POST /scenarios/run`** (JSON or YAML with `Content-Type: application/x-yaml`).
 
@@ -103,7 +110,7 @@ These flows call the same HTTP API that scenarios orchestrate internally—usefu
 | Command | Purpose |
 |---------|---------|
 | `make demo-mock` | Mock control-plane walkthrough (after `CLOUDNET_PROVIDER=mock make dev`). |
-| `make demo-scenario` | Runs `./scripts/cloudnet run examples/backend_failure.yaml`. |
+| `make demo-scenario` | Runs `./scripts/cloudnet run examples/backend-failure.yaml`. |
 | `make demo-aws-control-plane` | Real AWS resources (costs money); needs `CLOUDNET_PROVIDER=aws`, credentials, `make check-api`. Optional `CLOUDNET_DEMO_CLEANUP=true`. |
 
 ### Interactive access on deployed nodes

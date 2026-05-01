@@ -11,4 +11,4 @@ echo "This demo runs a full scenario and prints structured experiment output:"
 echo "  per-step expected vs actual, durations, overall status, and report id."
 echo ""
 
-exec python3 "${ROOT}/cli/cloudnet.py" run "${ROOT}/examples/backend_failure.yaml"
+exec python3 "${ROOT}/cli/cloudnet.py" run "${ROOT}/examples/backend-failure.yaml"

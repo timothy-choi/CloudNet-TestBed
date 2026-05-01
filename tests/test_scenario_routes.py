@@ -258,3 +258,54 @@ def test_scenario_results_not_found(client: TestClient, monkeypatch) -> None:
     mock_stack(monkeypatch)
     r = client.get("/scenarios/99999/results")
     assert r.status_code == 404
+
+
+def test_scenario_fails_when_validate_expectation_mismatch(
+    client: TestClient, monkeypatch,
+) -> None:
+    mock_stack(monkeypatch)
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "bad_expect"},
+            "topology": {
+                "name": "scenario-mismatch",
+                "nodes": [
+                    {"name": "a", "type": "host"},
+                    {"name": "b", "type": "host"},
+                ],
+                "links": [{"from": "a", "to": "b", "subnet": "10.77.1.0/24"}],
+                "firewall_rules": [],
+            },
+            "steps": [
+                {"validate": "all"},
+                {"validate": {"expect": "fail"}},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "FAILED"
+    assert body["steps"][1]["status"] == "FAILED"
+
+
+def test_scenario_drift_expect_none_alias(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+    response = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "drift_none"},
+            "topology": {
+                "name": "scenario-drift-none",
+                "nodes": [{"name": "solo", "type": "host"}],
+                "links": [{"from": "solo", "to": "solo", "subnet": "10.76.1.0/24"}],
+                "firewall_rules": [],
+            },
+            "steps": [
+                {"validate": "all"},
+                {"drift": {"expect": "none"}},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "PASSED"

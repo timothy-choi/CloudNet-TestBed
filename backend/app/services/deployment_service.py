@@ -5,7 +5,17 @@ from sqlmodel import Session, select
 
 from app.models import DeploymentResource, Topology
 from app.providers.factory import get_provider
-from app.resource_types import non_aws_deploy_resource_labels
+from app.resource_types import (
+    AWS_INTERNET_GATEWAY,
+    AWS_ROUTE_TABLE,
+    AWS_ROUTE_TABLE_ASSOCIATION,
+    AWS_SECURITY_GROUP,
+    AWS_VPC,
+    INSTANCE_RESOURCE_TYPES,
+    NETWORK_RESOURCE_TYPES,
+    SUBNET_RESOURCE_TYPES,
+    non_aws_deploy_resource_labels,
+)
 from app.topology_compiler import compile_topology
 
 
@@ -429,3 +439,69 @@ def _record_optional_aws_network_resource(
     session.refresh(resource)
     created_resources.append(resource)
     response_resources.append(deployment_summary_resource(resource))
+
+
+def _deployment_resource_delete_order(resource: DeploymentResource) -> tuple[int, int]:
+    """Instances first, then subnets and attachments, then VPC/network last."""
+    rt = resource.resource_type
+    if rt in INSTANCE_RESOURCE_TYPES:
+        tier = 0
+    elif rt in SUBNET_RESOURCE_TYPES:
+        tier = 1
+    elif rt in (
+        AWS_SECURITY_GROUP,
+        AWS_INTERNET_GATEWAY,
+        AWS_ROUTE_TABLE,
+        AWS_ROUTE_TABLE_ASSOCIATION,
+    ):
+        tier = 2
+    elif rt == AWS_VPC or rt in NETWORK_RESOURCE_TYPES:
+        tier = 4
+    else:
+        tier = 3
+    rid = resource.id or 0
+    return (tier, -rid)
+
+
+def cleanup_topology_deployment(session: Session, topology: Topology) -> dict[str, Any]:
+    """Remove recorded provider resources for this topology (same operations as manual teardown).
+
+    AWS: deletes the VPC via ``delete_network``, which terminates instances and subnets.
+    Mock / OpenStack-style: deletes each resource via ``delete_resource`` in dependency order.
+    """
+    if topology.id is None:
+        raise DeploymentError("topology must be saved before cleanup")
+
+    resources = list_topology_resources(session, topology.id)
+    if not resources:
+        topology.status = "CREATED"
+        session.add(topology)
+        session.commit()
+        return {"status": "SKIPPED", "detail": "no deployment resources"}
+
+    provider = get_provider()
+    n = len(resources)
+
+    if provider.name == "aws":
+        vpc_rows = [r for r in resources if r.resource_type == AWS_VPC]
+        if not vpc_rows:
+            raise DeploymentError(
+                "AWS topology has deployment resources but no aws_vpc row; "
+                "manual cleanup may be required"
+            )
+        provider.delete_network(vpc_rows[0].openstack_id)
+        for r in resources:
+            session.delete(r)
+        session.commit()
+    else:
+        ordered = sorted(resources, key=_deployment_resource_delete_order)
+        for r in ordered:
+            provider.delete_resource(r.resource_type, r.openstack_id)
+            session.delete(r)
+        session.commit()
+
+    topology.status = "CREATED"
+    session.add(topology)
+    session.commit()
+    session.refresh(topology)
+    return {"status": "CLEANED", "resources_removed": n}

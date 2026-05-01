@@ -148,6 +148,9 @@ def _print_scenario_report(body: dict) -> None:
         elif action == "reconcile":
             print(f"  expected: repaired")
             print(f"  actual: {(step.get('actual') or '').lower()}")
+        elif action == "cleanup":
+            print(f"  expected: resources released")
+            print(f"  actual: {(step.get('actual') or '').lower()}")
 
         ms = int(step.get("duration_ms") or 0)
         print(f"  duration: {_fmt_step_duration(ms)}")
@@ -169,18 +172,22 @@ def _print_scenario_report(body: dict) -> None:
         print(f"Experiment report: GET {base}/scenarios/{rid}/results")
 
 
-def cmd_run(client: httpx.Client, args: argparse.Namespace) -> None:
+def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
     path = Path(args.file)
     body = load_scenario_yaml(path)
     response = client.post("/scenarios/run", json=body)
     if response.status_code >= 400:
-        sys.exit(f"scenario run failed: {response.status_code} {response.text}")
+        print(
+            f"scenario run failed: {response.status_code} {response.text}",
+            file=sys.stderr,
+        )
+        return 1
     data = response.json()
     if args.json:
         print(json.dumps(data, indent=2))
     else:
         _print_scenario_report(data)
-    sys.exit(0 if data.get("status") == "PASSED" else 1)
+    return 0 if data.get("status") == "PASSED" else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -241,7 +248,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     with http_client() as client:
-        args.func(client, args)
+        rc = args.func(client, args)
+    if isinstance(rc, int):
+        sys.exit(rc)
 
 
 if __name__ == "__main__":
