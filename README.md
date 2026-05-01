@@ -119,6 +119,20 @@ The mock provider simulates variable latency and optional packet loss (see **`CL
 
 ---
 
+## Run reliability experiments in CI
+
+GitHub Actions can gate pull requests on the same failure/recovery scenario you run locally—**no AWS credentials**. Workflow **`.github/workflows/cloudnet-scenario.yml`** installs dependencies, starts the API with **`CLOUDNET_PROVIDER=mock`**, waits until **`GET /health`** succeeds, then runs:
+
+```bash
+./scripts/cloudnet run examples/backend-failure.yaml
+```
+
+The step fails if the CLI exits non-zero (**scenario `FAILED`**, HTTP error, or API never became ready). The main **`CI`** workflow (**`.github/workflows/ci.yml`**) still runs **`make ci`** (lint + unit tests) and a mock control-plane demo; the **CloudNet scenario** workflow focuses on **`examples/backend-failure.yaml`** as an end-to-end reliability check.
+
+Locally, after **`CLOUDNET_PROVIDER=mock make dev`**, run **`make scenario-test`** to execute that scenario against **`CLOUDNET_API_BASE_URL`** (default **`http://127.0.0.1:8010`**). Related targets: **`make ci`** (lint + unit tests), **`make demo-scenario`** (same YAML with a short banner via **`scripts/demo_scenario.sh`**).
+
+---
+
 ## Experiment reports
 
 Runs can be persisted with **`topology_id`**, timestamps, total **`duration_ms`**, and per-step **`expected`** / **`actual`** / **`status`**. **`GET /scenarios/{scenario_run_id}/results`** returns the saved report; **`GET /topologies/{id}/events`** lists the event timeline.
@@ -410,6 +424,9 @@ Use this before enabling real deployments:
 
 | Symptom | What to check |
 |---------|----------------|
+| **Backend not ready** (`curl` fails, CLI connection errors) | Start the API (**`make dev`** or **`uvicorn`** from **`backend/`**); wait for **`curl -fsS http://127.0.0.1:8010/health`**. Point the CLI at the right URL: **`export CLOUDNET_API_BASE_URL=http://127.0.0.1:<port>`** if not using the default port **8010**. |
+| **Wrong provider selected** | CI and scenario workflows set **`CLOUDNET_PROVIDER=mock`**. Locally, use **`CLOUDNET_PROVIDER=mock`** for tests without cloud credentials. If **`CLOUDNET_PROVIDER`** is unset, see **Providers** (OpenStack may be selected when **`OPENSTACK_ENABLED=true`**). |
+| **Scenario `FAILED` (expected vs actual)** | Re-run with **`./scripts/cloudnet run <file> --json`** and inspect **`steps`** (`expected`, `actual`, `status`). Optional **`requirements`** blocks add availability/latency/recovery gates—see **Non-functional validation**. Check **`GET /topologies/{id}/events`** for **`SCENARIO_RUN`** and requirement events. |
 | **AMI not found** | `AWS_DEFAULT_AMI_ID` exists in `AWS_REGION`; AMIs are regional. |
 | **VPC limit exceeded** | Default VPC quota per region; delete unused VPCs or request a limit increase. |
 | **`iam:PassRole` denied** | IAM user/role needs permission to pass the instance profile role used for SSM. |

@@ -1,4 +1,4 @@
-.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery demo-aws-control-plane demo-mock demo-scenario ci
+.PHONY: install run run-port stop free-port test lint-check dev check-api demo-failure-recovery demo-aws-control-plane demo-mock demo-scenario scenario-test ci
 
 PORT ?= 8010
 PYTHON ?= python3
@@ -40,5 +40,9 @@ demo-mock:
 
 demo-scenario:
 	./scripts/demo_scenario.sh
+
+# Requires API already running (e.g. CLOUDNET_PROVIDER=mock make dev). Exit 0 = scenario PASSED.
+scenario-test:
+	./scripts/cloudnet run examples/backend-failure.yaml
 
 ci: lint-check test

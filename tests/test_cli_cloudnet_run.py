@@ -1,4 +1,9 @@
-"""CLI scenario exit codes (0 pass, 1 fail)."""
+"""CLI scenario exit codes.
+
+CI contract: ``cloudnet run`` must exit 0 when the API reports scenario status
+PASSED, and 1 when the scenario FAILED or the HTTP request fails (see
+``.github/workflows/cloudnet-scenario.yml``).
+"""
 
 from __future__ import annotations
 
@@ -40,6 +45,7 @@ def scenario_file(tmp_path: Path) -> Path:
 
 
 def test_cmd_run_returns_zero_on_pass(scenario_file: Path) -> None:
+    """Exit code 0 when POST /scenarios/run returns status PASSED (CI success)."""
     client = MagicMock()
     resp = MagicMock()
     resp.status_code = 200
@@ -55,6 +61,7 @@ def test_cmd_run_returns_zero_on_pass(scenario_file: Path) -> None:
 
 
 def test_cmd_run_returns_one_on_failed_scenario(scenario_file: Path) -> None:
+    """Exit code 1 when scenario status is FAILED (CI failure)."""
     client = MagicMock()
     resp = MagicMock()
     resp.status_code = 200
@@ -106,6 +113,7 @@ def test_cmd_run_prints_compact_scenario_report(capsys: pytest.CaptureFixture[st
 
 
 def test_cmd_run_returns_one_on_http_error(scenario_file: Path) -> None:
+    """Exit code 1 on HTTP error from API (CI failure)."""
     client = MagicMock()
     resp = MagicMock()
     resp.status_code = 400
