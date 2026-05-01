@@ -1,6 +1,14 @@
-# CloudNet Testbed
+# CloudNet — Reliability Testing Platform for Cloud Topologies
 
-CloudNet is a reliability experiment runner for cloud network topologies. Users define a topology and failure scenario, then CloudNet plans, deploys, validates, injects failure, detects drift, reconciles recovery, and reports the result.
+CloudNet runs **failure scenarios** on cloud infrastructure and **verifies recovery**: deploy, validate connectivity, inject faults, detect drift, reconcile, and emit a clear pass/fail report.
+
+**First command** (with the API running — see Quick Start):
+
+```bash
+./scripts/cloudnet run examples/backend-failure.yaml
+```
+
+Use **`./scripts/cloudnet`** from the project root, or add `scripts/` to your `PATH` and run **`cloudnet`**. Exit code **0** = scenario **PASSED**, **1** = **FAILED** or HTTP error. Use **`cloudnet run --json`** for the raw API response.
 
 **Languages:** Python (FastAPI, topology compiler, providers), Bash (demos).
 
@@ -15,61 +23,30 @@ CloudNet is a reliability experiment runner for cloud network topologies. Users 
 
 ---
 
-## Quick Start: Run an experiment
+## Quick Start
 
-Install dependencies and start the API with the **mock** provider (no AWS credentials):
+**1. Install and start the API** with the **mock** provider (no AWS credentials):
 
 ```bash
 pip install -r backend/requirements.txt
 CLOUDNET_PROVIDER=mock make dev
 ```
 
-In another terminal, run the interactive mock walkthrough:
-
-```bash
-CLOUDNET_PROVIDER=mock make demo-mock
-```
-
-That script drives the full reliability loop. The timeline it prints follows:
-
-```text
-PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
-```
-
-For a **declarative scenario** (YAML with topology + steps), run:
+**2. Run a scenario** in another terminal:
 
 ```bash
 ./scripts/cloudnet run examples/backend-failure.yaml
 ```
 
-Or **`make demo-scenario`** for the same example with a short banner. Exit code **0** means **`PASSED`**, **1** means **`FAILED`** or HTTP error.
+For a shorter example (deploy + validate only), use **`examples/simple-connectivity.yaml`**.
 
-The API returns **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, **`steps`**, **`event_timeline_url`**, and **`scenario_run_id`** (**`GET /scenarios/{id}/results`**).
+**Optional:** **`make demo-scenario`** runs the backend-failure YAML with a short banner. **`CLOUDNET_PROVIDER=mock make demo-mock`** is an interactive walkthrough of the same reliability narrative.
 
----
+That narrative is:
 
-## Scenario YAML
-
-Three top-level keys:
-
-| Key | Purpose |
-|-----|---------|
-| **`scenario`** | `name:` label for the experiment |
-| **`topology`** | Same as standalone topology YAML (`name`, `nodes`, `links`, `firewall_rules`) |
-| **`steps`** | Ordered list; **each item is a single-key mapping** |
-
-**Steps:**
-
-| Key | Example | Notes |
-|-----|---------|--------|
-| **`deploy`** | `deploy: true` | Calls the same **`deploy_topology`** path as **`POST /topologies/{id}/deploy`**. If your scenario has **no** `deploy` step, CloudNet deploys once automatically before other steps (backward compatible). |
-| **`validate`** | `validate: all` or `validate: { expect: pass \| fail }` | Connectivity validation |
-| **`fail`** | `fail: { node: backend }` | Node-down / stop instance |
-| **`drift`** | `drift: { expect: detected \| clean \| none }` | `none` means no drift (alias for **clean**). |
-| **`reconcile`** | `reconcile: true` | Same as **`POST /topologies/{id}/reconcile`** |
-| **`cleanup`** | `cleanup: true` *(optional)* | Tear down deployment resources (VPC delete on AWS; `delete_resource` per row on mock). Use **last** if included. |
-
-Submit scenarios with **`POST /scenarios/run`** (JSON or YAML with `Content-Type: application/x-yaml`).
+```text
+PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
+```
 
 ---
 
@@ -147,7 +124,32 @@ Under the hood, CloudNet keeps **desired state** (stored topology) separate from
 
 ## Advanced usage
 
-Use these when you need **raw HTTP**, **topology-only workflows**, or **implementation reference**—the same endpoints power scenario runs under the hood.
+Use these when you need **raw HTTP**, **topology-only workflows**, **scenario file details**, or **implementation reference**—the same endpoints power **`cloudnet run`** under the hood.
+
+### Scenario file format (YAML)
+
+Three top-level keys:
+
+| Key | Purpose |
+|-----|---------|
+| **`scenario`** | `name:` label for the experiment |
+| **`topology`** | Same as standalone topology YAML (`name`, `nodes`, `links`, `firewall_rules`) |
+| **`steps`** | Ordered list; **each item is a single-key mapping** |
+
+**Steps:**
+
+| Key | Example | Notes |
+|-----|---------|--------|
+| **`deploy`** | `deploy: true` | Same path as **`POST /topologies/{id}/deploy`**. If the scenario has **no** `deploy` step, CloudNet deploys automatically once before other steps. |
+| **`validate`** | `validate: all` or `validate: { expect: pass \| fail }` | Connectivity validation |
+| **`fail`** | `fail: { node: backend }` | Node-down / stop instance |
+| **`drift`** | `drift: { expect: detected \| clean \| none }` | `none` means no drift (alias for **clean**). |
+| **`reconcile`** | `reconcile: true` | Same as **`POST /topologies/{id}/reconcile`** |
+| **`cleanup`** | `cleanup: true` *(optional)* | Tear down deployment resources (VPC delete on AWS; `delete_resource` per row on mock). Use **last** if included. |
+
+Submit the same payload with **`POST /scenarios/run`** (JSON body, or YAML with **`Content-Type: application/x-yaml`**).
+
+Successful runs return **`scenario`**, **`status`**, **`topology_id`**, **`duration_ms`**, **`steps`**, **`event_timeline_url`**, and **`scenario_run_id`**; fetch persisted reports with **`GET /scenarios/{id}/results`**.
 
 ### Raw HTTP lifecycle
 

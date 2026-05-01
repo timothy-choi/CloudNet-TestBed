@@ -105,71 +105,66 @@ def load_scenario_yaml(path: Path) -> dict:
     return data
 
 
-def _fmt_step_duration(ms: int) -> str:
-    if ms >= 1000:
-        return f"{ms / 1000:.1f}s"
-    return f"{ms}ms"
+def _fmt_total_time_ms(duration_ms: int) -> str:
+    if duration_ms >= 1000:
+        return f"{duration_ms / 1000.0:.1f}s"
+    return f"{duration_ms}ms"
 
 
-def _display_validate_token(val: str | None) -> str:
-    if val == "PASSED":
-        return "pass"
-    if val == "FAILED":
-        return "fail"
-    return val or "—"
+def _scenario_step_one_liner(index: int, step: dict[str, object]) -> str:
+    ok = step.get("status") == "PASSED"
+    mark = "✔" if ok else "✖"
+    action = str(step.get("action") or "")
+    actual = step.get("actual")
+    expected = step.get("expected")
+    name = str(step.get("name") or "")
 
+    if action == "deploy":
+        return f"[{index}] Deploy topology {mark}"
 
-def _provider_display(provider_action: str | None) -> str:
-    if provider_action == "stop_server":
-        return "stop_instance"
-    return provider_action or "—"
+    if action == "validate":
+        if ok:
+            if actual == "PASSED":
+                return f"[{index}] Validate {mark} PASSED"
+            if actual == "FAILED" and expected == "FAILED":
+                return f"[{index}] Validate {mark} FAILED (expected)"
+            return f"[{index}] Validate {mark} {actual}"
+        return f"[{index}] Validate {mark} {actual or 'FAILED'}"
+
+    if action == "fail":
+        node = name.removeprefix("fail ").strip() if name.startswith("fail ") else name
+        return f"[{index}] Fail {node} {mark}"
+
+    if action == "drift":
+        if ok and actual in ("DETECTED", "CLEAN"):
+            return f"[{index}] Drift {mark} {str(actual).lower()}"
+        return f"[{index}] Drift {mark} {actual or 'FAILED'}"
+
+    if action == "reconcile":
+        if ok and actual == "RECONCILED":
+            return f"[{index}] Reconcile {mark} repaired"
+        return f"[{index}] Reconcile {mark} {actual or 'FAILED'}"
+
+    if action == "cleanup":
+        if ok and actual:
+            return f"[{index}] Cleanup {mark} {str(actual).lower()}"
+        return f"[{index}] Cleanup {mark} {actual or 'FAILED'}"
+
+    return f"[{index}] {name or action} {mark}"
 
 
 def _print_scenario_report(body: dict) -> None:
+    scenario_name = body.get("scenario", "scenario")
+    print(f"Running scenario: {scenario_name}")
+    print()
     steps = body.get("steps") or []
     for i, step in enumerate(steps, start=1):
-        ok = step.get("status") == "PASSED"
-        sym = "✔" if ok else "✖"
-        name = step.get("name", "")
-        action = step.get("action", "")
-        print(f"Step {i}: {name}")
-
-        if action == "validate":
-            print(f"  expected: {_display_validate_token(step.get('expected'))}")
-            print(f"  actual: {_display_validate_token(step.get('actual'))}")
-        elif action == "deploy":
-            print(f"  expected: status {str(step.get('expected') or '').lower()}")
-            print(f"  actual: {str(step.get('actual') or '').lower()}")
-        elif action == "fail":
-            print(f"  action: {_provider_display(step.get('provider_action'))}")
-        elif action == "drift":
-            print(f"  expected: {(step.get('expected') or '').lower()}")
-            print(f"  actual: {(step.get('actual') or '').lower()}")
-        elif action == "reconcile":
-            print(f"  expected: repaired")
-            print(f"  actual: {(step.get('actual') or '').lower()}")
-        elif action == "cleanup":
-            print(f"  expected: resources released")
-            print(f"  actual: {(step.get('actual') or '').lower()}")
-
-        ms = int(step.get("duration_ms") or 0)
-        print(f"  duration: {_fmt_step_duration(ms)}")
-        if step.get("message"):
-            print(f"  note: {step['message']}")
-        print(f"  result: {sym}")
-        print()
-
+        print(_scenario_step_one_liner(i, step))
+    print()
     overall = body.get("status", "")
-    total_ms = int(body.get("duration_ms") or 0)
     print(f"Scenario {overall}")
-    print(f"Total duration: {_fmt_step_duration(total_ms)}")
-    tid = body.get("topology_id")
-    base = api_base_url()
-    if tid is not None:
-        print(f"Event timeline: GET {base}/topologies/{tid}/events")
-    rid = body.get("scenario_run_id")
-    if rid is not None:
-        print(f"Experiment report: GET {base}/scenarios/{rid}/results")
+    total_ms = int(body.get("duration_ms") or 0)
+    print(f"Total time: {_fmt_total_time_ms(total_ms)}")
 
 
 def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
@@ -193,7 +188,7 @@ def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cloudnet",
-        description="CloudNet Testbed CLI",
+        description="CloudNet — reliability testing platform for cloud topologies",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

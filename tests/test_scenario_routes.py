@@ -289,6 +289,16 @@ def test_scenario_fails_when_validate_expectation_mismatch(
     assert body["steps"][1]["status"] == "FAILED"
 
 
+def test_simple_connectivity_example_passes(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "examples" / "simple-connectivity.yaml").read_text()
+    data = yaml.safe_load(text)
+    response = client.post("/scenarios/run", json=data)
+    assert response.status_code == 200
+    assert response.json()["status"] == "PASSED"
+
+
 def test_scenario_drift_expect_none_alias(client: TestClient, monkeypatch) -> None:
     mock_stack(monkeypatch)
     response = client.post(
