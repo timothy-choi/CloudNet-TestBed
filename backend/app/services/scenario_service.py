@@ -1,12 +1,21 @@
 """Execute declarative test scenarios against deployed topologies."""
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, select
 
-from app.models import FirewallRule, Link, Node, Topology
+from app.models import (
+    FirewallRule,
+    Link,
+    Node,
+    ScenarioRun,
+    ScenarioStepResult,
+    Topology,
+    utc_now,
+)
 from app.schemas import TopologyInput
 from app.services.connectivity_service import ConnectivityTestError, validate_topology_links
 from app.services.control_plane_service import ControlPlaneError, reconcile_topology
@@ -16,6 +25,7 @@ from app.services.deployment_service import (
     deploy_topology,
 )
 from app.services.drift_service import DriftError, detect_topology_drift
+from app.services.event_service import emit_event
 from app.services.failure_service import FailureError, inject_node_down
 from app.topology_compiler import compile_topology
 
@@ -157,6 +167,158 @@ def _step_matches_validate(actual: str, expect: str) -> bool:
     return actual == want
 
 
+def _validate_expected_label(expect: str) -> str:
+    return "PASSED" if expect == "pass" else "FAILED"
+
+
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
+
+
+def _step_record(
+    *,
+    name: str,
+    action: str,
+    expected: str | None,
+    actual: str | None,
+    step_passed: bool,
+    duration_ms: int,
+    message: str | None = None,
+    provider_action: str | None = None,
+) -> dict[str, Any]:
+    rec: dict[str, Any] = {
+        "name": name,
+        "action": action,
+        "expected": expected,
+        "actual": actual,
+        "status": "PASSED" if step_passed else "FAILED",
+        "duration_ms": duration_ms,
+        "message": message,
+    }
+    if provider_action is not None:
+        rec["provider_action"] = provider_action
+    return rec
+
+
+def _persist_scenario_report(
+    session: Session,
+    *,
+    topology_id: int,
+    scenario_name: str,
+    overall_status: str,
+    started_at: Any,
+    finished_at: Any,
+    duration_ms: int,
+    step_dicts: list[dict[str, Any]],
+) -> ScenarioRun:
+    run = ScenarioRun(
+        topology_id=topology_id,
+        scenario_name=scenario_name,
+        status=overall_status,
+        started_at=started_at,
+        finished_at=finished_at,
+        duration_ms=duration_ms,
+    )
+    session.add(run)
+    session.flush()
+    for i, s in enumerate(step_dicts):
+        session.add(
+            ScenarioStepResult(
+                scenario_run_id=run.id,
+                step_index=i,
+                name=s["name"],
+                action=s["action"],
+                expected=s.get("expected"),
+                actual=s.get("actual"),
+                status=s["status"],
+                duration_ms=s["duration_ms"],
+                message=s.get("message"),
+                provider_action=s.get("provider_action"),
+            )
+        )
+    session.commit()
+    session.refresh(run)
+    emit_event(
+        session,
+        topology_id,
+        "SCENARIO_RUN",
+        overall_status,
+        f"Scenario {scenario_name} finished with status {overall_status}",
+        {
+            "scenario_run_id": run.id,
+            "scenario_name": scenario_name,
+            "duration_ms": duration_ms,
+        },
+    )
+    return run
+
+
+def scenario_result_response(
+    *,
+    scenario_name: str,
+    scenario_run_id: int,
+    topology_id: int,
+    topology_name: str,
+    overall_status: str,
+    started_at: Any,
+    finished_at: Any,
+    duration_ms: int,
+    steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "scenario": scenario_name,
+        "scenario_run_id": scenario_run_id,
+        "status": overall_status,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
+        "topology_id": topology_id,
+        "topology_name": topology_name,
+        "steps": steps,
+    }
+
+
+def get_scenario_run_results(session: Session, scenario_run_id: int) -> dict[str, Any] | None:
+    stmt = (
+        select(ScenarioRun)
+        .where(ScenarioRun.id == scenario_run_id)
+        .options(selectinload(ScenarioRun.steps))
+    )
+    run = session.exec(stmt).first()
+    if run is None:
+        return None
+    topo = session.get(Topology, run.topology_id)
+    topology_name = topo.name if topo else ""
+    ordered = sorted(run.steps, key=lambda s: s.step_index)
+    steps_out = [_step_row_to_api(s) for s in ordered]
+    return scenario_result_response(
+        scenario_name=run.scenario_name,
+        scenario_run_id=run.id,
+        topology_id=run.topology_id,
+        topology_name=topology_name,
+        overall_status=run.status,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        duration_ms=run.duration_ms,
+        steps=steps_out,
+    )
+
+
+def _step_row_to_api(row: ScenarioStepResult) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "name": row.name,
+        "action": row.action,
+        "expected": row.expected,
+        "actual": row.actual,
+        "status": row.status,
+        "duration_ms": row.duration_ms,
+        "message": row.message,
+    }
+    if row.provider_action:
+        d["provider_action"] = row.provider_action
+    return d
+
+
 class ScenarioRunner:
     """Thin orchestration over deploy, validate, failure injection, drift, reconcile."""
 
@@ -171,6 +333,9 @@ class ScenarioRunner:
         raw_steps: list[Any],
     ) -> dict[str, Any]:
         session = self._session
+        started_at = utc_now()
+        t_run = time.perf_counter()
+
         parsed = parse_scenario_steps(raw_steps)
         topology = _persist_topology(session, topology_input)
 
@@ -182,26 +347,32 @@ class ScenarioRunner:
             raise ScenarioError(str(exc)) from exc
 
         topology = _load_topology(session, topology.id)
+        topology_name = topology.name
+        topology_id = topology.id
 
         step_records: list[dict[str, Any]] = []
         overall_ok = True
 
         for step in parsed:
+            t_step = time.perf_counter()
+
             if isinstance(step, _ValidateStep):
-                label = "validate"
+                exp_label = _validate_expected_label(step.expect)
                 try:
                     response = validate_topology_links(session=session, topology=topology)
                 except ConnectivityTestError as exc:
                     actual = "FAILED"
                     ok = _step_matches_validate(actual, step.expect)
                     step_records.append(
-                        {
-                            "step": label,
-                            "result": actual,
-                            "expect": step.expect,
-                            "detail": str(exc),
-                            "step_passed": ok,
-                        }
+                        _step_record(
+                            name="validate",
+                            action="validate",
+                            expected=exp_label,
+                            actual=actual,
+                            step_passed=ok,
+                            duration_ms=_elapsed_ms(t_step),
+                            message=str(exc),
+                        )
                     )
                     if not ok:
                         overall_ok = False
@@ -210,114 +381,148 @@ class ScenarioRunner:
                 actual = str(response["status"])
                 ok = _step_matches_validate(actual, step.expect)
                 step_records.append(
-                    {
-                        "step": label,
-                        "result": actual,
-                        "expect": step.expect,
-                        "step_passed": ok,
-                    }
+                    _step_record(
+                        name="validate",
+                        action="validate",
+                        expected=exp_label,
+                        actual=actual,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_step),
+                    )
                 )
                 if not ok:
                     overall_ok = False
 
             elif isinstance(step, _FailStep):
-                label = f"fail {step.node}"
+                name = f"fail {step.node}"
                 try:
-                    event = inject_node_down(
+                    inject_node_down(
                         session=session,
                         topology=topology,
                         node_name=step.node,
                     )
-                    result = event.status
+                    actual = "SUCCESS"
+                    ok = True
+                    msg = None
                 except FailureError as exc:
-                    step_records.append(
-                        {
-                            "step": label,
-                            "result": "FAILED",
-                            "detail": str(exc),
-                            "step_passed": False,
-                        }
-                    )
-                    overall_ok = False
-                    continue
+                    actual = "FAILED"
+                    ok = False
+                    msg = str(exc)
 
-                ok = result == "SUCCESS"
                 step_records.append(
-                    {"step": label, "result": result, "step_passed": ok}
+                    _step_record(
+                        name=name,
+                        action="fail",
+                        expected="SUCCESS",
+                        actual=actual,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_step),
+                        message=msg,
+                        provider_action="stop_server",
+                    )
                 )
                 if not ok:
                     overall_ok = False
 
             elif isinstance(step, _DriftStep):
-                label = "drift"
+                exp_drift = "DETECTED" if step.expect == "detected" else "CLEAN"
                 try:
                     drift = detect_topology_drift(session=session, topology=topology)
                     detected = bool(drift.get("drift_detected"))
                 except DriftError as exc:
                     step_records.append(
-                        {
-                            "step": label,
-                            "result": "FAILED",
-                            "expect": step.expect,
-                            "detail": str(exc),
-                            "step_passed": False,
-                        }
+                        _step_record(
+                            name="drift",
+                            action="drift",
+                            expected=exp_drift,
+                            actual=None,
+                            step_passed=False,
+                            duration_ms=_elapsed_ms(t_step),
+                            message=str(exc),
+                        )
                     )
                     overall_ok = False
                     continue
 
-                want_detected = step.expect == "detected"
-                ok = detected == want_detected
-                actual_label = "DETECTED" if detected else "CLEAN"
-                rec: dict[str, Any] = {
-                    "step": label,
-                    "result": actual_label if ok else "FAILED",
-                    "expect": step.expect,
-                    "step_passed": ok,
-                }
-                if not ok:
-                    rec["detail"] = (
-                        f"expected drift {'detected' if want_detected else 'clean'}, "
-                        f"got {actual_label}"
+                obs = "DETECTED" if detected else "CLEAN"
+                ok = obs == exp_drift
+                step_records.append(
+                    _step_record(
+                        name="drift",
+                        action="drift",
+                        expected=exp_drift,
+                        actual=obs,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_step),
+                        message=None
+                        if ok
+                        else (
+                            f"expected {exp_drift}, observed provider state indicates {obs}"
+                        ),
                     )
+                )
+                if not ok:
                     overall_ok = False
-                step_records.append(rec)
 
             elif isinstance(step, _ReconcileStep):
-                label = "reconcile"
                 try:
                     response = reconcile_topology(session=session, topology=topology)
                     actual = str(response["status"])
                 except ControlPlaneError as exc:
                     step_records.append(
-                        {
-                            "step": label,
-                            "result": "FAILED",
-                            "detail": str(exc),
-                            "step_passed": False,
-                        }
+                        _step_record(
+                            name="reconcile",
+                            action="reconcile",
+                            expected="RECONCILED",
+                            actual=None,
+                            step_passed=False,
+                            duration_ms=_elapsed_ms(t_step),
+                            message=str(exc),
+                        )
                     )
                     overall_ok = False
                     continue
 
-                step_ok = actual == "RECONCILED"
+                ok = actual == "RECONCILED"
                 step_records.append(
-                    {
-                        "step": label,
-                        "result": actual,
-                        "step_passed": step_ok,
-                    }
+                    _step_record(
+                        name="reconcile",
+                        action="reconcile",
+                        expected="RECONCILED",
+                        actual=actual,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_step),
+                    )
                 )
-                if not step_ok:
+                if not ok:
                     overall_ok = False
 
-        return {
-            "scenario": scenario_name,
-            "topology_id": topology.id,
-            "topology_name": topology.name,
-            "status": "PASSED" if overall_ok else "FAILED",
-            "steps": step_records,
-        }
+        finished_at = utc_now()
+        duration_ms = int((time.perf_counter() - t_run) * 1000)
+        overall_status = "PASSED" if overall_ok else "FAILED"
+
+        saved = _persist_scenario_report(
+            session,
+            topology_id=topology_id,
+            scenario_name=scenario_name,
+            overall_status=overall_status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            step_dicts=step_records,
+        )
+
+        return scenario_result_response(
+            scenario_name=scenario_name,
+            scenario_run_id=saved.id,
+            topology_id=topology_id,
+            topology_name=topology_name,
+            overall_status=overall_status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            steps=step_records,
+        )
 
 
 def run_scenario(

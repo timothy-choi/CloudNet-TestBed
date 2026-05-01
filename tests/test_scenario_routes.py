@@ -112,8 +112,13 @@ def test_scenario_run_backend_failure_flow(client: TestClient, monkeypatch) -> N
     assert body["scenario"] == "backend_failure_test"
     assert body["status"] == "PASSED"
     assert body["topology_name"] == "scenario-two-host"
+    assert "duration_ms" in body
+    assert body["duration_ms"] >= 0
+    assert "scenario_run_id" in body
+    assert "started_at" in body and "finished_at" in body
+
     steps = body["steps"]
-    assert [s["step"] for s in steps] == [
+    assert [s["name"] for s in steps] == [
         "validate",
         "fail client-b",
         "validate",
@@ -121,15 +126,54 @@ def test_scenario_run_backend_failure_flow(client: TestClient, monkeypatch) -> N
         "reconcile",
         "validate",
     ]
-    assert steps[0]["result"] == "PASSED"
-    assert steps[0]["step_passed"] is True
-    assert steps[1]["result"] == "SUCCESS"
-    assert steps[2]["result"] == "FAILED"
-    assert steps[2]["step_passed"] is True
-    assert steps[3]["result"] == "DETECTED"
-    assert steps[3]["step_passed"] is True
-    assert steps[4]["result"] == "RECONCILED"
-    assert steps[5]["result"] == "PASSED"
+    assert [s["action"] for s in steps] == [
+        "validate",
+        "fail",
+        "validate",
+        "drift",
+        "reconcile",
+        "validate",
+    ]
+    assert steps[0]["actual"] == "PASSED"
+    assert steps[0]["status"] == "PASSED"
+    assert steps[1]["actual"] == "SUCCESS"
+    assert steps[1]["provider_action"] == "stop_server"
+    assert steps[2]["actual"] == "FAILED"
+    assert steps[2]["status"] == "PASSED"
+    assert steps[3]["actual"] == "DETECTED"
+    assert steps[4]["actual"] == "RECONCILED"
+    assert steps[5]["actual"] == "PASSED"
+
+    for s in steps:
+        assert "duration_ms" in s
+
+
+def test_scenario_get_results_round_trip(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+
+    post = client.post(
+        "/scenarios/run",
+        json={
+            "scenario": {"name": "roundtrip"},
+            "topology": {
+                "name": "scenario-rt",
+                "nodes": [{"name": "solo", "type": "host"}],
+                "links": [{"from": "solo", "to": "solo", "subnet": "10.97.1.0/24"}],
+                "firewall_rules": [],
+            },
+            "steps": [{"validate": "all"}],
+        },
+    )
+    assert post.status_code == 200
+    rid = post.json()["scenario_run_id"]
+
+    get_r = client.get(f"/scenarios/{rid}/results")
+    assert get_r.status_code == 200
+    fetched = get_r.json()
+    assert fetched["scenario_run_id"] == rid
+    assert fetched["scenario"] == "roundtrip"
+    assert len(fetched["steps"]) == 1
+    assert fetched["steps"][0]["action"] == "validate"
 
 
 def test_scenario_run_accepts_yaml_body(client: TestClient, monkeypatch) -> None:
@@ -172,3 +216,9 @@ def test_scenario_run_rejects_bad_step(client: TestClient, monkeypatch) -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_scenario_results_not_found(client: TestClient, monkeypatch) -> None:
+    mock_stack(monkeypatch)
+    r = client.get("/scenarios/99999/results")
+    assert r.status_code == 404

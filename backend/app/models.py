@@ -43,6 +43,10 @@ class Topology(SQLModel, table=True):
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+    scenario_runs: list["ScenarioRun"] = Relationship(
+        back_populates="topology",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class Node(SQLModel, table=True):
@@ -126,3 +130,41 @@ class Event(SQLModel, table=True):
     )
 
     topology: Topology | None = Relationship(back_populates="events")
+
+
+class ScenarioRun(SQLModel, table=True):
+    """Persisted experiment report for one scenario execution."""
+
+    __tablename__ = "scenario_run"
+
+    id: int | None = Field(default=None, primary_key=True)
+    topology_id: int = Field(foreign_key="topology.id")
+    scenario_name: str
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int = 0
+
+    topology: Topology | None = Relationship(back_populates="scenario_runs")
+    steps: list["ScenarioStepResult"] = Relationship(
+        back_populates="scenario_run",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class ScenarioStepResult(SQLModel, table=True):
+    __tablename__ = "scenario_step_result"
+
+    id: int | None = Field(default=None, primary_key=True)
+    scenario_run_id: int = Field(foreign_key="scenario_run.id")
+    step_index: int = 0
+    name: str
+    action: str
+    expected: str | None = None
+    actual: str | None = None
+    status: str
+    duration_ms: int = 0
+    message: str | None = None
+    provider_action: str | None = None
+
+    scenario_run: ScenarioRun | None = Relationship(back_populates="steps")

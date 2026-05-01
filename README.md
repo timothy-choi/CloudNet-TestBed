@@ -93,8 +93,12 @@ CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane
 CloudNet lets you define **failure scenarios** and execute them as one unit on **real or mock** cloud environments—no manual chaining of deploy, validate, break, and reconcile calls.
 
 - **Scenario file** — top-level keys `scenario` (with `name`), `topology` (same shape as other topology YAML), and `steps`. Each step is a single-key mapping, for example `validate: all`, `validate: { expect: pass | fail }`, `fail: { node: backend }`, `drift: { expect: detected | clean }`, and `reconcile: true`.
-- **Engine** — **`POST /scenarios/run`** creates the topology, deploys it, then runs steps in order using the same services as **`POST .../validate`**, **`POST .../failures/node-down`**, **`GET .../drift`** (via `detect_topology_drift`), and **`POST .../reconcile`**. Each step records `step_passed` for expectation checks. Request body may be **JSON** (default) or **YAML** with header `Content-Type: application/x-yaml`.
-- **CLI** — `./scripts/cloudnet run examples/backend_failure.yaml` prints a short step summary (✔ / ✖), exits **0** if the scenario **`status`** is **`PASSED`**, otherwise **1**. Use **`--json`** for raw API output.
+- **Engine** — **`POST /scenarios/run`** creates the topology, deploys it, then runs steps in order using the same services as **`POST .../validate`**, **`POST .../failures/node-down`**, **`GET .../drift`** (via `detect_topology_drift`), and **`POST .../reconcile`**. Each step records **`expected`**, **`actual`**, per-step **`status`** (**`PASSED`** / **`FAILED`**), and **`duration_ms`**. The overall response includes **`started_at`**, **`finished_at`**, **`duration_ms`**, and **`scenario_run_id`**. Request body may be **JSON** (default) or **YAML** with header `Content-Type: application/x-yaml`.
+- **CLI** — `./scripts/cloudnet run examples/backend_failure.yaml` prints an experiment-style report (steps with expected vs actual, durations, ✔/✖), total duration, and the report id; exits **0** if the scenario **`status`** is **`PASSED`**, otherwise **1**. Use **`--json`** for raw API output.
+
+### Experiment reports
+
+CloudNet persists each run as a structured **experiment report**: linked to **`topology_id`**, with **`scenario_run_id`**, wall-clock timestamps, total **`duration_ms`**, and per-step metrics (**`name`**, **`action`**, **`expected`**, **`actual`**, **`status`**, **`duration_ms`**, optional **`message`** / **`provider_action`**). A **`SCENARIO_RUN`** event is recorded on the topology timeline (see **`GET /topologies/{id}/events`**). Fetch the same payload later with **`GET /scenarios/{scenario_run_id}/results`**.
 
 ---
 
@@ -422,6 +426,7 @@ Proxmox variables (`PROXMOX_HOST`, `PROXMOX_USER`, …) are documented in `.env.
 | Step | Endpoint |
 |------|----------|
 | Scenario run | `POST /scenarios/run` |
+| Scenario report | `GET /scenarios/{scenario_run_id}/results` |
 | Plan | `GET /topologies/{id}/plan` |
 | Deploy | `POST /topologies/{id}/deploy` |
 | Validate | `POST /topologies/{id}/validate` |

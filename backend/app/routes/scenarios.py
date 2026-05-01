@@ -8,7 +8,11 @@ from sqlmodel import Session
 
 from app.db import get_session
 from app.schemas import TopologyInput
-from app.services.scenario_service import ScenarioError, ScenarioRunner
+from app.services.scenario_service import (
+    ScenarioError,
+    ScenarioRunner,
+    get_scenario_run_results,
+)
 
 
 class ScenarioMeta(BaseModel):
@@ -64,3 +68,15 @@ async def run_scenario_endpoint(
         )
     except ScenarioError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{scenario_run_id}/results")
+def get_scenario_run_results_endpoint(
+    scenario_run_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Retrieve a persisted scenario experiment report by run id."""
+    body = get_scenario_run_results(session, scenario_run_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="scenario run not found")
+    return body

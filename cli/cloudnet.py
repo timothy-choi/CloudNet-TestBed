@@ -105,43 +105,62 @@ def load_scenario_yaml(path: Path) -> dict:
     return data
 
 
-def _format_scenario_step_line(step: dict) -> str:
-    label = step["step"]
-    result = step["result"]
-    ok = step.get("step_passed", False)
-
-    if label.startswith("fail "):
-        node = label.removeprefix("fail ").strip()
-        if result == "SUCCESS":
-            return f"fail {node}: injected"
-        return f"fail {node}: {result}"
-
-    if label == "reconcile":
-        if result == "RECONCILED":
-            return "reconcile: repaired"
-        return f"reconcile: {result}"
-
-    if label == "drift":
-        if result in ("DETECTED", "CLEAN"):
-            return f"drift: {result.lower()}"
-        return f"drift: {result}"
-
-    if label == "validate":
-        exp = step.get("expect")
-        if exp == "fail" and result == "FAILED" and ok:
-            return "validate: FAILED (expected)"
-        return f"validate: {result}"
-
-    return f"{label}: {result}"
+def _fmt_step_duration(ms: int) -> str:
+    if ms >= 1000:
+        return f"{ms / 1000:.1f}s"
+    return f"{ms}ms"
 
 
-def _print_scenario_result(body: dict) -> None:
-    for step in body.get("steps", []):
-        sym = "✔" if step.get("step_passed") else "✖"
-        line = _format_scenario_step_line(step)
-        print(f"{sym} {line}")
-    print()
-    print(f"Scenario {body.get('scenario')!r}: {body.get('status')}")
+def _display_validate_token(val: str | None) -> str:
+    if val == "PASSED":
+        return "pass"
+    if val == "FAILED":
+        return "fail"
+    return val or "—"
+
+
+def _provider_display(provider_action: str | None) -> str:
+    if provider_action == "stop_server":
+        return "stop_instance"
+    return provider_action or "—"
+
+
+def _print_scenario_report(body: dict) -> None:
+    steps = body.get("steps") or []
+    for i, step in enumerate(steps, start=1):
+        ok = step.get("status") == "PASSED"
+        sym = "✔" if ok else "✖"
+        name = step.get("name", "")
+        action = step.get("action", "")
+        print(f"Step {i}: {name}")
+
+        if action == "validate":
+            print(f"  expected: {_display_validate_token(step.get('expected'))}")
+            print(f"  actual: {_display_validate_token(step.get('actual'))}")
+        elif action == "fail":
+            print(f"  action: {_provider_display(step.get('provider_action'))}")
+        elif action == "drift":
+            print(f"  expected: {(step.get('expected') or '').lower()}")
+            print(f"  actual: {(step.get('actual') or '').lower()}")
+        elif action == "reconcile":
+            print(f"  expected: repaired")
+            print(f"  actual: {(step.get('actual') or '').lower()}")
+
+        ms = int(step.get("duration_ms") or 0)
+        print(f"  duration: {_fmt_step_duration(ms)}")
+        if step.get("message"):
+            print(f"  note: {step['message']}")
+        print(f"  result: {sym}")
+        print()
+
+    overall = body.get("status", "")
+    total_ms = int(body.get("duration_ms") or 0)
+    print(f"Scenario {overall}")
+    print(f"Total duration: {_fmt_step_duration(total_ms)}")
+    rid = body.get("scenario_run_id")
+    if rid is not None:
+        base = api_base_url()
+        print(f"Report: GET {base}/scenarios/{rid}/results")
 
 
 def cmd_run(client: httpx.Client, args: argparse.Namespace) -> None:
@@ -154,7 +173,7 @@ def cmd_run(client: httpx.Client, args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(data, indent=2))
     else:
-        _print_scenario_result(data)
+        _print_scenario_report(data)
     sys.exit(0 if data.get("status") == "PASSED" else 1)
 
 
@@ -205,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--json",
         action="store_true",
-        help="Print raw JSON instead of step summary lines",
+        help="Print raw JSON instead of experiment report",
     )
     p_run.set_defaults(func=cmd_run)
 

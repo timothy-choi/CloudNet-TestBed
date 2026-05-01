@@ -1,5 +1,6 @@
 from collections.abc import Generator
 
+import app.models  # noqa: F401 — register SQLModel tables
 from sqlmodel import Session, SQLModel, create_engine
 
 
