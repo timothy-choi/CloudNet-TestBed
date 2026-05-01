@@ -1,0 +1,12 @@
+# Invalid: malformed CIDR string on a link.
+name: invalid-cidr-topo
+nodes:
+  - name: a
+    type: host
+  - name: b
+    type: host
+links:
+  - from: a
+    to: b
+    subnet: totally-not-a-cidr
+firewall_rules: []

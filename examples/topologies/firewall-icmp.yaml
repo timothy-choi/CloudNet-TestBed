@@ -1,0 +1,16 @@
+# Golden: ICMP (and optional TCP) firewall rules on a simple pair.
+name: golden-firewall-icmp
+nodes:
+  - name: src
+    type: host
+  - name: dst
+    type: host
+links:
+  - from: src
+    to: dst
+    subnet: 10.140.1.0/24
+firewall_rules:
+  - name: icmp-echo
+    protocol: icmp
+    from: src
+    to: dst

@@ -1,3 +1,5 @@
+import ipaddress
+from itertools import combinations
 from typing import Any
 
 
@@ -37,7 +39,7 @@ def compile_topology(topology: dict[str, Any]) -> dict[str, Any]:
         node_names.add(node_name)
         servers.append({"name": node_name, "type": node_type})
 
-    networks: list[dict[str, Any]] = []
+    parsed_links: list[tuple[int, str, str, str, ipaddress._BaseNetwork]] = []
     for index, link in enumerate(links, start=1):
         from_node = link.get("from")
         to_node = link.get("to")
@@ -49,7 +51,26 @@ def compile_topology(topology: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"link {index} references unknown node '{to_node}'")
         if not subnet:
             raise ValueError(f"link {index} must have a subnet")
+        if not isinstance(subnet, str):
+            raise ValueError(f"link {index} subnet must be a string CIDR")
+        try:
+            net = ipaddress.ip_network(subnet.strip(), strict=False)
+        except ValueError as exc:
+            raise ValueError(
+                f"link {index} has invalid subnet CIDR {subnet!r}"
+            ) from exc
+        parsed_links.append((index, from_node, to_node, subnet.strip(), net))
 
+    for (i, _, _, si, ni), (j, _, _, sj, nj) in combinations(parsed_links, 2):
+        if ni.version != nj.version:
+            continue
+        if ni.overlaps(nj):
+            raise ValueError(
+                f"link {i} subnet {si!r} overlaps link {j} subnet {sj!r}"
+            )
+
+    networks: list[dict[str, Any]] = []
+    for index, from_node, to_node, subnet, _net in parsed_links:
         networks.append(
             {
                 "name": f"{topology_name}-net-{index}",

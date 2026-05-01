@@ -230,6 +230,42 @@ def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
     return 0 if data.get("status") == "PASSED" else 1
 
 
+def cmd_validate_topology(client: httpx.Client, args: argparse.Namespace) -> int:
+    """Validate topology YAML locally (compiler + quotas); no HTTP deploy."""
+    path = Path(args.file)
+    try:
+        raw_text = path.read_text()
+    except OSError as exc:
+        print(f"failed to read file: {exc}", file=sys.stderr)
+        return 1
+    try:
+        data = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        print(f"invalid YAML: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(data, dict):
+        print("topology file must contain a YAML mapping", file=sys.stderr)
+        return 1
+    try:
+        from pydantic import ValidationError
+
+        from app.services.scenario_service import ScenarioError
+        from app.services.topology_validate_service import validate_topology_yaml_dict
+
+        result = validate_topology_yaml_dict(data)
+    except ValidationError as exc:
+        print(f"topology schema invalid: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"topology invalid: {exc}", file=sys.stderr)
+        return 1
+    except ScenarioError as exc:
+        print(f"topology invalid: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cloudnet",
@@ -285,6 +321,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request deployment cleanup after the scenario run (API body cleanup: true)",
     )
     p_run.set_defaults(func=cmd_run)
+
+    p_validate_topo = sub.add_parser(
+        "validate-topology",
+        help="Validate topology YAML (compile + quotas + warnings); does not deploy",
+    )
+    p_validate_topo.add_argument("file", help="Path to topology YAML")
+    p_validate_topo.set_defaults(func=cmd_validate_topology)
 
     return parser
 

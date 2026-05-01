@@ -1,0 +1,15 @@
+# Invalid: overlapping link subnets (10.70.1.0/24 overlaps 10.70.1.128/25).
+name: invalid-overlap
+nodes:
+  - name: x
+    type: host
+  - name: y
+    type: host
+links:
+  - from: x
+    to: y
+    subnet: 10.70.1.0/24
+  - from: x
+    to: y
+    subnet: 10.70.1.128/25
+firewall_rules: []

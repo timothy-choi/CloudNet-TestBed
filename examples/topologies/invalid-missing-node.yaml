@@ -1,0 +1,10 @@
+# Invalid: link references a node not declared under nodes.
+name: invalid-missing-node
+nodes:
+  - name: only
+    type: host
+links:
+  - from: only
+    to: ghost
+    subnet: 10.80.1.0/24
+firewall_rules: []

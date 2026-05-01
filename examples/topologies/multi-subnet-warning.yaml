@@ -1,0 +1,17 @@
+# Golden: same host on two links → multi-home warning (first subnet wins at deploy).
+name: golden-multi-subnet-warning
+nodes:
+  - name: fe
+    type: host
+  - name: be
+    type: host
+  - name: db
+    type: host
+links:
+  - from: fe
+    to: be
+    subnet: 10.60.1.0/24
+  - from: fe
+    to: db
+    subnet: 10.60.2.0/24
+firewall_rules: []

@@ -1,0 +1,7 @@
+# Invalid: load_balancer is not a supported node type (see topology_compiler).
+name: invalid-lb
+nodes:
+  - name: lb
+    type: load_balancer
+links: []
+firewall_rules: []

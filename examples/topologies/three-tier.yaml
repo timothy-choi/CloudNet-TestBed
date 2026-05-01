@@ -1,0 +1,25 @@
+# Golden: linear three-tier chain, two subnets, ICMP rules.
+name: golden-three-tier
+nodes:
+  - name: frontend
+    type: host
+  - name: backend
+    type: host
+  - name: db
+    type: host
+links:
+  - from: frontend
+    to: backend
+    subnet: 10.130.1.0/24
+  - from: backend
+    to: db
+    subnet: 10.130.2.0/24
+firewall_rules:
+  - name: allow-fe-be-ping
+    protocol: icmp
+    from: frontend
+    to: backend
+  - name: allow-be-db-ping
+    protocol: icmp
+    from: backend
+    to: db

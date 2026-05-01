@@ -119,6 +119,27 @@ The mock provider simulates variable latency and optional packet loss (see **`CL
 
 ---
 
+## Supported topologies
+
+CloudNet compiles **nodes**, **links** (each link carries a **subnet** CIDR), and optional **firewall_rules** into a deployment-shaped plan. Which shapes are supported today, which emit warnings, and which are out of scope for the MVP are summarized in **[docs/topology-support.md](docs/topology-support.md)**.
+
+**Golden examples** (used by regression tests; **no AWS required**):
+
+- **`examples/topologies/two-node.yaml`** — two hosts, one subnet  
+- **`examples/topologies/three-tier.yaml`** — linear chain, ICMP rules  
+- **`examples/topologies/multi-subnet-warning.yaml`** — multi-homed warning path  
+- **`examples/topologies/firewall-icmp.yaml`** — ICMP firewall rules  
+
+Validate a file locally (**compile + quotas + overlap checks**; does not call the cloud):
+
+```bash
+./scripts/cloudnet validate-topology examples/topologies/three-tier.yaml
+```
+
+**`make ci`** runs golden and invalid topology tests alongside the rest of the suite.
+
+---
+
 ## Run reliability experiments in CI
 
 GitHub Actions can gate pull requests on the same failure/recovery scenario you run locally—**no AWS credentials**. Workflow **`.github/workflows/cloudnet-scenario.yml`** installs dependencies, starts the API with **`CLOUDNET_PROVIDER=mock`**, waits until **`GET /health`** succeeds, then runs:
