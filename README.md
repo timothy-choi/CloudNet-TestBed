@@ -256,6 +256,73 @@ curl -o cloudnet-terraform.zip \
   http://127.0.0.1:8010/topologies/{topology_id}/terraform.zip
 ```
 
+## Observability & Event Timeline
+
+CloudNet tracks control-plane actions as structured events. Plan, deploy,
+validation, failure injection, and reconcile operations are recorded with a
+timestamp, type, status, message, and metadata so users can inspect system
+behavior over time.
+
+Fetch a topology timeline:
+
+```bash
+curl http://127.0.0.1:8010/topologies/{topology_id}/events
+```
+
+Fetch the latest events first:
+
+```bash
+curl "http://127.0.0.1:8010/topologies/{topology_id}/events?reverse=true&limit=10"
+```
+
+Example event:
+
+```json
+{
+  "type": "DEPLOY_COMPLETE",
+  "status": "SUCCESS",
+  "message": "Deployed 3 instances",
+  "metadata": {
+    "instance_count": 3
+  }
+}
+```
+
+## Drift Detection
+
+CloudNet can compare desired topology state with actual AWS state before
+reconciling. Drift detection checks persisted CloudNet resources against AWS and
+reports missing or unhealthy infrastructure, including stopped or missing EC2
+instances, missing subnets, missing security groups, and missing firewall rules.
+
+Check drift without repairing anything:
+
+```bash
+curl http://127.0.0.1:8010/topologies/{topology_id}/drift
+```
+
+Example response:
+
+```json
+{
+  "topology_id": 13,
+  "drift_detected": true,
+  "items": [
+    {
+      "resource_type": "aws_instance",
+      "name": "client-b",
+      "expected": "running",
+      "actual": "stopped",
+      "severity": "warning"
+    }
+  ]
+}
+```
+
+Reconcile runs drift detection first, emits a `DRIFT_DETECTED` event when drift
+exists, and then repairs what the MVP supports, such as stopped EC2 instances
+and missing firewall rules.
+
 CloudNet only deletes AWS VPCs tagged as CloudNet-managed and refuses to delete
 default VPCs. Cleanup is required after demos to terminate CloudNet instances
 and remove the VPC/subnet pair. Always confirm the VPC ID before cleanup:

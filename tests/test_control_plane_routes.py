@@ -10,7 +10,9 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.db import get_session
 from app.main import app
 from app.models import DeploymentResource
-from app.services import control_plane_service
+from app.providers.mock_provider import MockProvider
+from app.routes import topology as topology_routes
+from app.services import control_plane_service, deployment_service, drift_service
 
 
 class FakeAWSProvider:
@@ -42,6 +44,16 @@ class FakeAWSProvider:
         firewall_rules: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         return self.firewall_results
+
+    def resource_exists(self, resource_type: str, resource_id: str) -> bool:
+        return "missing" not in resource_id
+
+    def firewall_rule_exists(
+        self,
+        security_group_id: str,
+        firewall_rule: dict[str, str],
+    ) -> bool:
+        return "missing" not in firewall_rule["name"]
 
 
 @pytest.fixture
@@ -177,6 +189,24 @@ def seed_aws_security_group_resource(topology_id: int) -> None:
                 resource_type="aws_security_group",
                 resource_name="cloudnet-sg",
                 openstack_id="sg-1",
+            )
+        )
+        session.commit()
+    finally:
+        session_generator.close()
+
+
+def seed_aws_subnet_resource(topology_id: int) -> None:
+    session_override = app.dependency_overrides[get_session]
+    session_generator = session_override()
+    session = next(session_generator)
+    try:
+        session.add(
+            DeploymentResource(
+                topology_id=topology_id,
+                resource_type="aws_subnet",
+                resource_name="control-plane-test-net-1-subnet",
+                openstack_id="subnet-1",
             )
         )
         session.commit()
@@ -326,6 +356,7 @@ def test_reconcile_starts_stopped_instance_and_validates(
 ) -> None:
     topology_id = create_topology(client)
     seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
     provider = FakeAWSProvider(
         {"i-client-a": "running", "i-client-b": "stopped"}
     )
@@ -345,6 +376,19 @@ def test_reconcile_starts_stopped_instance_and_validates(
     assert response.json() == {
         "topology_id": topology_id,
         "status": "RECONCILED",
+        "drift": {
+            "topology_id": topology_id,
+            "drift_detected": True,
+            "items": [
+                {
+                    "resource_type": "aws_instance",
+                    "name": "client-b",
+                    "expected": "running",
+                    "actual": "stopped",
+                    "severity": "warning",
+                }
+            ],
+        },
         "actions": [
             {"node": "client-b", "action": "start", "result": "started"},
             {"action": "validate", "result": "PASSED"},
@@ -361,6 +405,7 @@ def test_reconcile_running_instance_takes_no_repair_action(
 ) -> None:
     topology_id = create_topology(client)
     seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
     provider = FakeAWSProvider(
         {"i-client-a": "running", "i-client-b": "running"}
     )
@@ -379,6 +424,11 @@ def test_reconcile_running_instance_takes_no_repair_action(
     response = client.post(f"/topologies/{topology_id}/reconcile")
 
     assert response.status_code == 200
+    assert response.json()["drift"] == {
+        "topology_id": topology_id,
+        "drift_detected": False,
+        "items": [],
+    }
     assert response.json()["actions"] == [
         {"action": "validate", "result": "PASSED"},
     ]
@@ -392,6 +442,7 @@ def test_reconcile_missing_instance_records_missing_action(
 ) -> None:
     topology_id = create_topology(client)
     seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
     provider = FakeAWSProvider(
         {
             "i-client-a": "running",
@@ -413,6 +464,19 @@ def test_reconcile_missing_instance_records_missing_action(
     response = client.post(f"/topologies/{topology_id}/reconcile")
 
     assert response.status_code == 200
+    assert response.json()["drift"] == {
+        "topology_id": topology_id,
+        "drift_detected": True,
+        "items": [
+            {
+                "resource_type": "aws_instance",
+                "name": "client-b",
+                "expected": "running",
+                "actual": "missing",
+                "severity": "critical",
+            }
+        ],
+    }
     assert response.json()["actions"] == [
         {"node": "client-b", "action": "MISSING", "result": "missing"},
         {"action": "validate", "result": "FAILED"},
@@ -469,8 +533,207 @@ def test_reconcile_restores_missing_firewall_rule(
     response = client.post(f"/topologies/{topology_id}/reconcile")
 
     assert response.status_code == 200
+    assert response.json()["drift"]["drift_detected"] is False
     assert {
         "resource": "cloudnet-sg",
         "action": "restore_firewall_rule",
         "result": "created",
     } in response.json()["actions"]
+
+
+def test_drift_endpoint_returns_no_drift(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    topology_id = create_topology(client)
+    seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
+    provider = FakeAWSProvider(
+        {"i-client-a": "running", "i-client-b": "running"}
+    )
+    monkeypatch.setattr(drift_service, "get_provider", lambda: provider)
+
+    response = client.get(f"/topologies/{topology_id}/drift")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "topology_id": topology_id,
+        "drift_detected": False,
+        "items": [],
+    }
+
+
+def test_drift_endpoint_reports_stopped_instance(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    topology_id = create_topology(client)
+    seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
+    provider = FakeAWSProvider(
+        {"i-client-a": "running", "i-client-b": "stopped"}
+    )
+    monkeypatch.setattr(drift_service, "get_provider", lambda: provider)
+
+    response = client.get(f"/topologies/{topology_id}/drift")
+
+    assert response.status_code == 200
+    assert response.json()["drift_detected"] is True
+    assert response.json()["items"] == [
+        {
+            "resource_type": "aws_instance",
+            "name": "client-b",
+            "expected": "running",
+            "actual": "stopped",
+            "severity": "warning",
+        }
+    ]
+
+
+def test_drift_endpoint_reports_missing_instance(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    topology_id = create_topology(client)
+    seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
+    provider = FakeAWSProvider(
+        {
+            "i-client-a": "running",
+            "i-client-b": RuntimeError("instance not found"),
+        }
+    )
+    monkeypatch.setattr(drift_service, "get_provider", lambda: provider)
+
+    response = client.get(f"/topologies/{topology_id}/drift")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {
+            "resource_type": "aws_instance",
+            "name": "client-b",
+            "expected": "running",
+            "actual": "missing",
+            "severity": "critical",
+        }
+    ]
+
+
+def test_events_are_created_on_deploy(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(deployment_service, "get_provider", lambda: MockProvider())
+    topology_id = create_topology(client)
+
+    response = client.post(f"/topologies/{topology_id}/deploy")
+
+    assert response.status_code == 200
+    events_response = client.get(f"/topologies/{topology_id}/events")
+    assert events_response.status_code == 200
+    events = events_response.json()["events"]
+    assert [event["type"] for event in events] == [
+        "DEPLOY_START",
+        "DEPLOY_COMPLETE",
+    ]
+    assert events[0]["status"] == "STARTED"
+    assert events[1]["status"] == "SUCCESS"
+    assert events[1]["metadata"]["instance_count"] == 2
+
+
+def test_event_is_created_on_validation(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    topology_id = create_topology(client)
+    monkeypatch.setattr(
+        topology_routes,
+        "validate_topology_links",
+        lambda session, topology: {
+            "topology_id": topology.id,
+            "status": "PASSED",
+            "results": [
+                {"source": "client-a", "target": "client-b", "status": "PASSED"}
+            ],
+        },
+    )
+
+    response = client.post(f"/topologies/{topology_id}/validate")
+
+    assert response.status_code == 200
+    events = client.get(f"/topologies/{topology_id}/events").json()["events"]
+    assert events[-1]["type"] == "VALIDATION"
+    assert events[-1]["status"] == "SUCCESS"
+    assert events[-1]["metadata"]["results"] == [
+        {"source": "client-a", "target": "client-b", "status": "PASSED"}
+    ]
+
+
+def test_events_are_created_on_reconcile(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    topology_id = create_topology(client)
+    seed_aws_instance_resources(topology_id)
+    seed_aws_security_group_resource(topology_id)
+    provider = FakeAWSProvider(
+        {"i-client-a": "running", "i-client-b": "stopped"}
+    )
+    monkeypatch.setattr(control_plane_service, "get_provider", lambda: provider)
+    monkeypatch.setattr(
+        control_plane_service,
+        "validate_topology_links",
+        lambda session, topology: {
+            "topology_id": topology.id,
+            "status": "PASSED",
+            "results": [],
+        },
+    )
+
+    response = client.post(f"/topologies/{topology_id}/reconcile")
+
+    assert response.status_code == 200
+    events = client.get(f"/topologies/{topology_id}/events").json()["events"]
+    assert [event["type"] for event in events] == [
+        "RECONCILE",
+        "DRIFT_DETECTED",
+        "RECONCILE",
+        "RECONCILE",
+    ]
+    assert events[0]["status"] == "STARTED"
+    assert events[1]["metadata"]["items"] == [
+        {
+            "resource_type": "aws_instance",
+            "name": "client-b",
+            "expected": "running",
+            "actual": "stopped",
+            "severity": "warning",
+        }
+    ]
+    assert events[2]["metadata"] == {
+        "node": "client-b",
+        "action": "start",
+        "result": "started",
+    }
+    assert events[3]["message"] == "Reconcile complete"
+
+
+def test_events_are_returned_in_order_with_reverse_and_limit(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "aws")
+    topology_id = create_topology(client)
+
+    response = client.get(f"/topologies/{topology_id}/plan")
+
+    assert response.status_code == 200
+    events = client.get(f"/topologies/{topology_id}/events").json()["events"]
+    assert [event["status"] for event in events] == ["STARTED", "SUCCESS"]
+
+    latest = client.get(
+        f"/topologies/{topology_id}/events",
+        params={"reverse": True, "limit": 1},
+    ).json()["events"]
+    assert len(latest) == 1
+    assert latest[0]["status"] == "SUCCESS"

@@ -201,6 +201,25 @@ step "Validating after reconcile (expected PASSED)"
 reconciled_validation="$(wait_for_validation_status "${topology_id}" "PASSED" 12)"
 echo "${reconciled_validation}" | jq .
 
+step "Fetching control-plane event timeline"
+events_response="$(api_get "/topologies/${topology_id}/events")"
+echo "${events_response}" | jq '.events[] | {timestamp, type, status, message, metadata}'
+
+timeline="$(jq -r '
+  .events
+  | map(
+      if .type == "PLAN" and .status == "SUCCESS" then "PLAN"
+      elif .type == "DEPLOY_COMPLETE" and .status == "SUCCESS" then "DEPLOY"
+      elif .type == "VALIDATION" and .status == "SUCCESS" then "VALIDATE(PASS)"
+      elif .type == "VALIDATION" and .status == "FAILED" then "VALIDATE(FAIL)"
+      elif .type == "FAILURE_INJECTED" then "FAILURE"
+      elif .type == "RECONCILE" and .message == "Reconcile complete" then "RECONCILE"
+      else empty end
+    )
+  | join(" -> ")
+' <<<"${events_response}")"
+echo "Timeline: ${timeline}"
+
 step "Demo summary"
 cat <<SUMMARY
 Topology ID: ${topology_id}
@@ -211,6 +230,7 @@ Baseline validation: PASSED
 After backend node-down: FAILED
 Reconcile: RECONCILED
 After reconcile: PASSED
+Timeline: PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> RECONCILE -> VALIDATE(PASS)
 SUMMARY
 
 cleanup_if_requested

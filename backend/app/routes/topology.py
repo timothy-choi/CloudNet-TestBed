@@ -2,7 +2,7 @@ from typing import Any
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlmodel import Session, select
 
@@ -29,6 +29,8 @@ from app.services.deployment_service import (
     list_topology_resources,
     serialize_deployment_resource,
 )
+from app.services.event_service import emit_event, list_events, serialize_event
+from app.services.drift_service import DriftError, detect_topology_drift
 from app.services.failure_service import (
     FailureError,
     failure_event_summary,
@@ -156,11 +158,48 @@ def deploy_topology_endpoint(
     if topology is None:
         raise HTTPException(status_code=404, detail="topology not found")
 
+    emit_event(
+        session=session,
+        topology_id=topology_id,
+        event_type="DEPLOY_START",
+        status="STARTED",
+        message="Deployment started",
+    )
     try:
-        return deploy_topology(session, topology)
+        response = deploy_topology(session, topology)
+        instance_count = len(
+            [
+                resource
+                for resource in response["resources"]
+                if resource["type"] in {"aws_instance", "nova_server"}
+            ]
+        )
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="DEPLOY_COMPLETE",
+            status="SUCCESS",
+            message=f"Deployed {instance_count} instances",
+            metadata={"instance_count": instance_count},
+        )
+        return response
     except DeploymentAlreadyExistsError as exc:
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="DEPLOY_COMPLETE",
+            status="FAILED",
+            message=str(exc),
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DeploymentError as exc:
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="DEPLOY_COMPLETE",
+            status="FAILED",
+            message=str(exc),
+        )
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -173,9 +212,35 @@ def plan_topology_endpoint(
     if topology is None:
         raise HTTPException(status_code=404, detail="topology not found")
 
+    emit_event(
+        session=session,
+        topology_id=topology_id,
+        event_type="PLAN",
+        status="STARTED",
+        message="Plan compilation started",
+    )
     try:
-        return plan_topology(topology)
+        response = plan_topology(topology)
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="PLAN",
+            status="SUCCESS",
+            message="Plan compilation succeeded",
+            metadata={
+                "subnet_count": len(response["plan"]["subnets"]),
+                "instance_count": len(response["plan"]["instances"]),
+            },
+        )
+        return response
     except ControlPlaneError as exc:
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="PLAN",
+            status="FAILED",
+            message=str(exc),
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -224,6 +289,21 @@ def terraform_export_zip_endpoint(
     )
 
 
+@router.get("/{topology_id}/drift")
+def drift_detection_endpoint(
+    topology_id: int,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    try:
+        return detect_topology_drift(session=session, topology=topology)
+    except DriftError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{topology_id}/reconcile")
 def reconcile_topology_endpoint(
     topology_id: int,
@@ -233,9 +313,52 @@ def reconcile_topology_endpoint(
     if topology is None:
         raise HTTPException(status_code=404, detail="topology not found")
 
+    emit_event(
+        session=session,
+        topology_id=topology_id,
+        event_type="RECONCILE",
+        status="STARTED",
+        message="Reconcile started",
+    )
     try:
-        return reconcile_topology(session, topology)
+        response = reconcile_topology(session, topology)
+        if response["drift"]["drift_detected"]:
+            emit_event(
+                session=session,
+                topology_id=topology_id,
+                event_type="DRIFT_DETECTED",
+                status="SUCCESS",
+                message="Drift detected before reconcile",
+                metadata={"items": response["drift"]["items"]},
+            )
+        for action in response["actions"]:
+            if action.get("action") == "validate":
+                continue
+            emit_event(
+                session=session,
+                topology_id=topology_id,
+                event_type="RECONCILE",
+                status="SUCCESS",
+                message=f"Reconcile action: {action.get('action')}",
+                metadata=action,
+            )
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="RECONCILE",
+            status="SUCCESS",
+            message="Reconcile complete",
+            metadata={"action_count": len(response["actions"])},
+        )
+        return response
     except ControlPlaneError as exc:
+        emit_event(
+            session=session,
+            topology_id=topology_id,
+            event_type="RECONCILE",
+            status="FAILED",
+            message=str(exc),
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -255,6 +378,29 @@ def get_topology_resources(
             serialize_deployment_resource(resource)
             for resource in resources
         ],
+    }
+
+
+@router.get("/{topology_id}/events")
+def get_topology_events(
+    topology_id: int,
+    limit: int | None = Query(default=None, ge=1),
+    reverse: bool = False,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    topology = session.get(Topology, topology_id)
+    if topology is None:
+        raise HTTPException(status_code=404, detail="topology not found")
+
+    events = list_events(
+        session=session,
+        topology_id=topology_id,
+        limit=limit,
+        reverse=reverse,
+    )
+    return {
+        "topology_id": topology_id,
+        "events": [serialize_event(event) for event in events],
     }
 
 
@@ -278,6 +424,18 @@ def create_ping_test_endpoint(
     except ConnectivityTestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    emit_event(
+        session=session,
+        topology_id=topology_id,
+        event_type="VALIDATION",
+        status="SUCCESS" if test.status == "PASSED" else "FAILED",
+        message=f"Ping {ping_request.source} -> {ping_request.target}: {test.status}",
+        metadata={
+            "source": ping_request.source,
+            "target": ping_request.target,
+            "test_type": "ping",
+        },
+    )
     return connectivity_test_summary(test)
 
 
@@ -310,9 +468,18 @@ def validate_topology_endpoint(
         raise HTTPException(status_code=404, detail="topology not found")
 
     try:
-        return validate_topology_links(session=session, topology=topology)
+        response = validate_topology_links(session=session, topology=topology)
     except ConnectivityTestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    emit_event(
+        session=session,
+        topology_id=topology_id,
+        event_type="VALIDATION",
+        status="SUCCESS" if response["status"] == "PASSED" else "FAILED",
+        message=f"Topology validation {response['status']}",
+        metadata={"results": response["results"]},
+    )
+    return response
 
 
 @router.post("/{topology_id}/failures/node-down")
@@ -334,6 +501,14 @@ def inject_node_down_endpoint(
     except FailureError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    emit_event(
+        session=session,
+        topology_id=topology_id,
+        event_type="FAILURE_INJECTED",
+        status="SUCCESS" if event.status == "SUCCESS" else "FAILED",
+        message=f"Injected node-down on {failure_request.node}",
+        metadata={"node": failure_request.node, "action": "stop_instance"},
+    )
     return failure_event_summary(event)
 
 

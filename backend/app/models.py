@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from typing import Any
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -34,6 +36,10 @@ class Topology(SQLModel, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
     failure_events: list["FailureEvent"] = Relationship(
+        back_populates="topology",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    events: list["Event"] = Relationship(
         back_populates="topology",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
@@ -105,3 +111,18 @@ class FailureEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
     topology: Topology | None = Relationship(back_populates="failure_events")
+
+
+class Event(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    topology_id: int = Field(foreign_key="topology.id")
+    timestamp: datetime = Field(default_factory=utc_now)
+    type: str
+    status: str
+    message: str
+    event_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSON),
+    )
+
+    topology: Topology | None = Relationship(back_populates="events")

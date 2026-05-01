@@ -84,6 +84,16 @@ class BaseProvider(ABC):
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def resource_exists(self, resource_type: str, resource_id: str) -> bool:
+        raise NotImplementedError
+
+    def firewall_rule_exists(
+        self,
+        security_group_id: str,
+        firewall_rule: dict[str, Any],
+    ) -> bool:
+        raise NotImplementedError
+
     def get_server_fixed_ip(
         self,
         server_id: str,

@@ -133,6 +133,16 @@ class MockProvider(BaseProvider):
             for rule in firewall_rules
         ]
 
+    def resource_exists(self, resource_type: str, resource_id: str) -> bool:
+        return "missing" not in resource_id
+
+    def firewall_rule_exists(
+        self,
+        security_group_id: str,
+        firewall_rule: dict[str, Any],
+    ) -> bool:
+        return "missing" not in firewall_rule["name"]
+
     def get_server_fixed_ip(
         self,
         server_id: str,

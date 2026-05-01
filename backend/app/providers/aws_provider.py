@@ -415,6 +415,53 @@ class AWSProvider(BaseProvider):
             )
         return results
 
+    def resource_exists(self, resource_type: str, resource_id: str) -> bool:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            if resource_type == "aws_subnet":
+                subnets = ec2.describe_subnets(SubnetIds=[resource_id]).get(
+                    "Subnets",
+                    [],
+                )
+                return bool(subnets)
+            if resource_type == "aws_security_group":
+                groups = ec2.describe_security_groups(
+                    Filters=[{"Name": "group-id", "Values": [resource_id]}]
+                ).get("SecurityGroups", [])
+                return bool(groups)
+            if resource_type == "aws_instance":
+                self._describe_instance_with_retry(ec2=ec2, instance_id=resource_id)
+                return True
+        except self._client_error_class():
+            return False
+        raise RuntimeError(f"unsupported AWS resource type for drift: {resource_type}")
+
+    def firewall_rule_exists(
+        self,
+        security_group_id: str,
+        firewall_rule: dict[str, Any],
+    ) -> bool:
+        settings = self._validated_settings(require_default_ami=False)
+        ec2 = self._client("ec2", settings)
+        try:
+            groups = ec2.describe_security_groups(
+                Filters=[{"Name": "group-id", "Values": [security_group_id]}]
+            ).get("SecurityGroups", [])
+        except self._client_error_class():
+            return False
+        if not groups:
+            return False
+
+        expected = self._firewall_rule_to_ip_permission(
+            security_group_id=security_group_id,
+            rule=firewall_rule,
+        )
+        return any(
+            self._security_group_permission_matches(existing, expected)
+            for existing in groups[0].get("IpPermissions", [])
+        )
+
     def get_server_fixed_ip(
         self,
         server_id: str,
@@ -824,6 +871,27 @@ class AWSProvider(BaseProvider):
             if "InvalidPermission.Duplicate" in self._error_detail(exc):
                 return "skipped"
             raise
+
+    def _security_group_permission_matches(
+        self,
+        existing: dict[str, Any],
+        expected: dict[str, Any],
+    ) -> bool:
+        if existing.get("IpProtocol") != expected.get("IpProtocol"):
+            return False
+        if existing.get("FromPort") != expected.get("FromPort"):
+            return False
+        if existing.get("ToPort") != expected.get("ToPort"):
+            return False
+        expected_groups = {
+            pair.get("GroupId")
+            for pair in expected.get("UserIdGroupPairs", [])
+        }
+        existing_groups = {
+            pair.get("GroupId")
+            for pair in existing.get("UserIdGroupPairs", [])
+        }
+        return expected_groups.issubset(existing_groups)
 
     def _delete_cloudnet_security_groups(self, ec2: Any, vpc_id: str) -> list[str]:
         groups = ec2.describe_security_groups(

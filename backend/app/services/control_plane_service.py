@@ -14,6 +14,7 @@ from app.services.deployment_service import (
     list_topology_resources,
     multi_homed_warnings,
 )
+from app.services.drift_service import detect_topology_drift
 
 
 class ControlPlaneError(Exception):
@@ -67,6 +68,7 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
     actions: list[dict[str, str]] = []
     started_instances: list[str] = []
     resources = list_topology_resources(session, topology.id)
+    drift = detect_topology_drift(session=session, topology=topology, provider=provider)
 
     for resource in _aws_instance_resources(resources):
         try:
@@ -127,6 +129,7 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
     return {
         "topology_id": topology.id,
         "status": "RECONCILED",
+        "drift": drift,
         "actions": actions,
     }
 
