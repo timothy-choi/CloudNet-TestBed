@@ -102,7 +102,10 @@ def cmd_state_clear(client: httpx.Client, args: argparse.Namespace) -> int:
 
 def cmd_cleanup(client: httpx.Client, args: argparse.Namespace) -> int:
     """POST /cleanup/janitor — best-effort orphaned resource teardown."""
-    del args  # unused
+    if getattr(args, "dry_run", False):
+        base = str(client.base_url).rstrip("/")
+        print(f"dry-run: would POST {base}/cleanup/janitor")
+        return 0
     response = client.post("/cleanup/janitor")
     if response.status_code >= 400:
         print(
@@ -463,6 +466,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_cleanup = sub.add_parser(
         "cleanup",
         help="Run janitor: tear down orphaned provider resources listed in state.json",
+    )
+    p_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the URL that would be called; do not invoke the API",
     )
     p_cleanup.set_defaults(func=cmd_cleanup)
 

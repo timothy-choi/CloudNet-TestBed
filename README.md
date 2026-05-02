@@ -8,6 +8,47 @@ CloudNet lets you run reliability experiments on cloud infrastructure using simp
 
 ---
 
+## Project Status
+
+- **Strong MVP** — end-to-end scenario runs (plan, deploy, validate, fail, drift, reconcile, requirements), mock and AWS providers, tests in CI.
+- **Not a production orchestrator** — lab-style control plane and experiments, not a replacement for Kubernetes, Terraform, or fleet management.
+- **AWS mode is optional** — real VPC/EC2 only when you set provider, credentials, and cost gates; not required for demos or CI.
+- **Mock mode is the safe default** — `CLOUDNET_PROVIDER=mock` (or default when OpenStack is off) runs the full pipeline without cloud resources; use this for README flows and GitHub Actions.
+
+---
+
+## Architecture Highlights
+
+- **Scenario engine** — YAML steps (`deploy`, `validate`, `fail`, `drift`, `reconcile`, `cleanup`, optional NFR `requirements`) executed with persisted reports and timeline events.
+- **Provider abstraction** — `BaseProvider` with **mock** (default for CI), **AWS** (primary real cloud path), and legacy **OpenStack** / **Proxmox** adapters.
+- **Desired vs actual state** — topology and deployment rows as intent; provider APIs as runtime truth for drift.
+- **Drift detection** — compares declared topology + deployment metadata to provider inventory where supported.
+- **Reconciliation** — starts instances, restores SG rules, runs validation when the provider supports repair paths.
+- **State store** — SQLite + optional **`state.json`** snapshot for deploy artifacts and operator tooling (`CLOUDNET_STATE_FILE`).
+- **Janitor cleanup** — **`POST /cleanup/janitor`** / **`cloudnet cleanup`** removes orphaned ACTIVE entries in **`state.json`** without matching DB rows (crash recovery).
+- **Concurrent validation** — ICMP/link checks run in parallel with caps (**`MAX_PARALLEL_VALIDATIONS`**, **`VALIDATION_TIMEOUT_SECONDS`**); API results stay in topology link order.
+
+---
+
+## Known Limitations
+
+- **Local state store** — **`state.json`** is node-local JSON (not shared HA storage); treat as operator cache only (see **`.gitignore`**).
+- **Limited failure types** — e.g. node-down / stop-style faults; not arbitrary chaos or multi-region drills.
+- **Limited topology graph support** — supported shapes are documented (see **`docs/topology-support.md`**); arbitrary graphs are out of scope.
+- **AWS as primary real provider** — supported for serious experiments; OpenStack/Proxmox are experimental or partial.
+
+---
+
+## Future Work
+
+- **Postgres** (or similar) as an optional durable state backend instead of SQLite-only deployments.
+- **More failure types** — richer fault injection beyond current MVP scenarios.
+- **Distributed workers** — validate/deploy workers scaled out (today concurrency is in-process).
+- **Richer observability** — deeper metrics, tracing, and dashboards beyond structured logs and timeline events.
+- **Web UI** — optional dashboard for runs, topology, and drift (CLI/API today).
+
+---
+
 ## 1-Minute Demo
 
 Run the mock experiment locally with no cloud credentials:
@@ -132,7 +173,7 @@ CloudNet:
 
 1. Compiles the YAML topology into a provider-shaped plan.
 2. Deploys infrastructure through the selected provider.
-3. Validates connectivity between declared nodes.
+3. Validates connectivity between declared nodes (link checks may run in parallel, capped by **`MAX_PARALLEL_VALIDATIONS`**).
 4. Injects a failure, such as stopping the backend node.
 5. Detects drift between desired state and provider state.
 6. Reconciles the system and validates recovery.
@@ -145,15 +186,6 @@ CloudNet:
 - Simulates failure scenarios with repeatable scenario files.
 - Validates that the system recovers, not just that resources exist.
 - Runs locally with the mock provider and can run against real AWS infrastructure.
-
----
-
-## Limitations
-
-- CloudNet is not a production orchestrator.
-- Failure types are intentionally limited.
-- The networking model is simplified and does not cover arbitrary cloud graphs.
-- AWS is the primary real-infrastructure provider; OpenStack and Proxmox paths are experimental/legacy.
 
 ---
 
@@ -196,6 +228,22 @@ PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONC
 ```
 
 If dependencies are not installed yet, run **`make install`** first.
+
+### Typical commands (with API running)
+
+After **`export PATH="$PWD/scripts:$PATH"`**, **`cloudnet`** is the same entrypoint as **`./scripts/cloudnet`**. With **`CLOUDNET_PROVIDER=mock make dev`** in another terminal:
+
+| Goal | Command |
+|------|---------|
+| Lint + tests | **`make ci`** (no cloud credentials) |
+| Demo script | **`make demo-mock`** |
+| Plan only (no HTTP / no cloud) | **`cloudnet plan examples/backend-failure.yaml`** |
+| Full scenario | **`cloudnet run examples/backend-failure.yaml`** |
+| Local deploy snapshot | **`cloudnet state show`** |
+| Janitor (preview) | **`cloudnet cleanup --dry-run`** |
+| Janitor (execute) | **`cloudnet cleanup`** |
+
+**`--dry-run`** prints the janitor URL that would be called and does not invoke the API.
 
 ---
 
@@ -409,7 +457,7 @@ CloudNet aims for **best-effort** cleanup: failures during teardown are logged b
 - **CLI**: **`./scripts/cloudnet run … --no-cleanup-on-failure`** sets **`scenario.cleanup_on_failure`** to **false** for that run (default is cleanup **on**).
 - **`cleanup: true`** (top-level scenario payload): Request teardown **after** the scenario completes (often paired with **`cleanup_on_failure`** for failure paths).
 - **CLI**: **`./scripts/cloudnet run … --cleanup`** sends the top-level **`cleanup`** flag.
-- **Orphaned `state.json`**: If the process crashes after creating cloud resources but **before** SQLite rows exist (or rows were lost), **`./scripts/cloudnet cleanup`** runs the janitor (**`POST /cleanup/janitor`**): it scans **`state.json`** for **ACTIVE** entries whose resource IDs are **not** backed by **`deploymentresource`** rows, tears those provider resources down, and removes the stale state entry.
+- **Orphaned `state.json`**: If the process crashes after creating cloud resources but **before** SQLite rows exist (or rows were lost), **`cloudnet cleanup`** ( **`POST /cleanup/janitor`** ) scans **`state.json`** for **ACTIVE** entries whose resource IDs are **not** backed by **`deploymentresource`** rows, tears those provider resources down, and removes the stale state entry. Use **`cloudnet cleanup --dry-run`** to print the request URL without calling the API.
 
 YAML mirrors the JSON API: optional **`scenario.cleanup_on_failure`** (default **true**) and optional top-level **`cleanup`**.
 
@@ -441,9 +489,10 @@ The control plane already stores **deployment resource rows** in SQLite. In addi
 CLI:
 
 ```bash
-./scripts/cloudnet state show    # print JSON
-./scripts/cloudnet state clear    # empty the file (does not delete cloud resources)
-./scripts/cloudnet cleanup       # janitor: reconcile orphaned ACTIVE state vs DB
+./scripts/cloudnet state show                    # print JSON
+./scripts/cloudnet state clear                   # empty the file (does not delete cloud resources)
+./scripts/cloudnet cleanup --dry-run             # janitor URL only (no API call)
+./scripts/cloudnet cleanup                       # janitor: reconcile orphaned ACTIVE state vs DB
 ```
 
 Treat **`state.json`** as **operator-local** (add **`state.json`** to **`.gitignore`**); it can contain resource identifiers.
