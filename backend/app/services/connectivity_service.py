@@ -19,6 +19,7 @@ from app.services.ping_metrics import (
     mean_latency_ms,
     p95_latency_ms,
 )
+from app.services.trace_logging import log_trace
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,15 @@ def validate_topology_links(
 ) -> dict[str, Any]:
     if topology.id is None:
         raise ConnectivityTestError("topology must be saved before validation")
+
+    log_trace(
+        "INFO",
+        "validate_topology_links",
+        status="STARTED",
+        message=f"topology={topology.name}",
+        resource_type="topology",
+        resource_id=str(topology.id),
+    )
 
     settings = get_validation_concurrency_settings()
     started = time.perf_counter()

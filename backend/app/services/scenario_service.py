@@ -41,6 +41,8 @@ from app.core.config import get_scenario_quota_settings
 from app.providers.factory import get_provider
 from app.services.scenario_logging import log_scenario_structured
 from app.services.scenario_quotas import validate_scenario_topology_quotas
+from app.services.trace_context import bind_scenario_trace
+from app.services.trace_logging import log_trace
 
 
 class ScenarioError(Exception):
@@ -247,11 +249,66 @@ def _step_record(
     return rec
 
 
-def _attempt_scenario_cleanup(session: Session, topology: Topology) -> None:
-    try:
-        cleanup_topology_deployment(session, topology)
-    except DeploymentError:
-        pass
+def _first_failed_step_label(step_dicts: list[dict[str, Any]]) -> str | None:
+    for rec in step_dicts:
+        if rec.get("status") == "FAILED":
+            name = rec.get("name")
+            action = rec.get("action")
+            if isinstance(name, str) and name.strip():
+                return name
+            if isinstance(action, str) and action.strip():
+                return action
+    return None
+
+
+def _attempt_scenario_cleanup(
+    session: Session,
+    topology: Topology,
+    *,
+    max_attempts: int = 2,
+) -> dict[str, Any]:
+    """Run janitor-style cleanup with bounded retries and structured logs."""
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            detail = cleanup_topology_deployment(session, topology)
+            log_trace(
+                "INFO",
+                "scenario_cleanup",
+                status="SUCCESS",
+                message="cleanup_topology_deployment finished",
+                retry_attempt=attempt,
+                max_attempts=max_attempts,
+            )
+            st = str(detail.get("status") or "")
+            outcome = "SKIPPED" if st == "SKIPPED" else "SUCCESS"
+            return {
+                "outcome": outcome,
+                "detail": detail,
+                "attempts": attempt,
+                "cleanup_topology_status": st,
+            }
+        except Exception as exc:
+            last_exc = exc
+            final = attempt >= max_attempts
+            log_trace(
+                "ERROR" if final else "WARNING",
+                "scenario_cleanup",
+                status="FAILED" if final else "RETRYING",
+                message=str(exc),
+                retry_attempt=attempt,
+                max_attempts=max_attempts,
+                error_type=type(exc).__name__,
+            )
+            if final:
+                break
+    return {
+        "outcome": "FAILED",
+        "detail": None,
+        "attempts": max_attempts,
+        "error": str(last_exc) if last_exc else "unknown",
+        "error_type": type(last_exc).__name__ if last_exc else None,
+    }
 
 
 def _create_scenario_run_placeholder(
@@ -319,6 +376,19 @@ def _finalize_scenario_run(
             "duration_ms": duration_ms,
         },
     )
+    if overall_status == "FAILED":
+        emit_event(
+            session,
+            run.topology_id,
+            "SCENARIO_FAILED",
+            "FAILED",
+            f"Scenario {scenario_name} failed",
+            {
+                "scenario_run_id": run.id,
+                "scenario_name": scenario_name,
+                "duration_ms": duration_ms,
+            },
+        )
     return run
 
 
@@ -334,10 +404,13 @@ def scenario_result_response(
     duration_ms: int,
     steps: list[dict[str, Any]],
     requirements: dict[str, Any] | None = None,
+    failed_step: str | None = None,
+    cleanup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "scenario": scenario_name,
         "scenario_run_id": scenario_run_id,
+        "scenario_run_ref": f"run-{scenario_run_id}",
         "status": overall_status,
         "started_at": started_at,
         "finished_at": finished_at,
@@ -349,6 +422,19 @@ def scenario_result_response(
     }
     if requirements is not None:
         body["requirements"] = requirements
+    if failed_step is not None:
+        body["failed_step"] = failed_step
+    if cleanup is not None:
+        body["cleanup"] = cleanup
+    if overall_status == "FAILED":
+        body["debug"] = {
+            "logs": (
+                "Structured traces use logger \"cloudnet.trace\" (JSON lines). "
+                "Filter by scenario_run_id or scenario_run_ref in each payload."
+            ),
+            "events_url": f"/topologies/{topology_id}/events",
+            "scenario_results_url": f"/scenarios/{scenario_run_id}/results",
+        }
     return body
 
 
@@ -365,6 +451,9 @@ def get_scenario_run_results(session: Session, scenario_run_id: int) -> dict[str
     topology_name = topo.name if topo else ""
     ordered = sorted(run.steps, key=lambda s: s.step_index)
     steps_out = [_step_row_to_api(s) for s in ordered]
+    failed = (
+        _first_failed_step_label(steps_out) if run.status == "FAILED" else None
+    )
     return scenario_result_response(
         scenario_name=run.scenario_name,
         scenario_run_id=run.id,
@@ -375,6 +464,7 @@ def get_scenario_run_results(session: Session, scenario_run_id: int) -> dict[str
         finished_at=run.finished_at,
         duration_ms=run.duration_ms,
         steps=steps_out,
+        failed_step=failed,
     )
 
 
@@ -439,147 +529,190 @@ class ScenarioRunner:
         topology = _load_topology(session, topology_id)
         topology_name = topology.name
 
-        quota_settings = get_scenario_quota_settings()
-
-        step_records: list[dict[str, Any]] = []
-        overall_ok = True
-        abort_scenario = False
-
-        def push_step(rec: dict[str, Any]) -> None:
-            step_records.append(rec)
-            log_scenario_structured(
-                "scenario_step",
-                scenario_run_id=scenario_run_id,
-                topology_id=topology_id,
-                provider=provider_name,
-                action=rec.get("action"),
-                status=rec.get("status"),
-                name=rec.get("name"),
-                step_index=len(step_records) - 1,
+        with bind_scenario_trace(
+            scenario_run_id=scenario_run_id,
+            topology_id=topology_id,
+            provider=provider_name,
+        ):
+            log_trace(
+                "INFO",
+                "scenario_run",
+                status="STARTED",
+                message=f"scenario_name={scenario_name!r}",
             )
+            quota_settings = get_scenario_quota_settings()
 
-        if not has_explicit_deploy:
-            t_impl = time.perf_counter()
-            if time.perf_counter() - t_run > quota_settings.max_duration_seconds:
-                rec = _step_record(
-                    name="duration_quota",
-                    action="quota",
-                    expected="within_limit",
-                    actual="FAILED",
-                    step_passed=False,
-                    duration_ms=_elapsed_ms(t_impl),
-                    message=(
-                        "scenario duration quota exceeded before implicit deploy "
-                        f"(CLOUDNET_MAX_SCENARIO_DURATION_SECONDS="
-                        f"{quota_settings.max_duration_seconds})"
-                    ),
+            step_records: list[dict[str, Any]] = []
+            overall_ok = True
+            abort_scenario = False
+
+            def push_step(rec: dict[str, Any]) -> None:
+                step_records.append(rec)
+                log_scenario_structured(
+                    "scenario_step",
+                    scenario_run_id=scenario_run_id,
+                    topology_id=topology_id,
+                    provider=provider_name,
+                    action=rec.get("action"),
+                    status=rec.get("status"),
+                    name=rec.get("name"),
+                    step_index=len(step_records) - 1,
                 )
-                push_step(rec)
-                overall_ok = False
-                abort_scenario = True
-            else:
-                try:
-                    dep = deploy_topology(
-                        session, topology, scenario_run_id=scenario_run_id
+
+            if not has_explicit_deploy:
+                t_impl = time.perf_counter()
+                if time.perf_counter() - t_run > quota_settings.max_duration_seconds:
+                    rec = _step_record(
+                        name="duration_quota",
+                        action="quota",
+                        expected="within_limit",
+                        actual="FAILED",
+                        step_passed=False,
+                        duration_ms=_elapsed_ms(t_impl),
+                        message=(
+                            "scenario duration quota exceeded before implicit deploy "
+                            f"(CLOUDNET_MAX_SCENARIO_DURATION_SECONDS="
+                            f"{quota_settings.max_duration_seconds})"
+                        ),
                     )
-                    actual = str(dep.get("status", ""))
-                    ok = actual == "ACTIVE"
-                    msg = None
-                    if dep.get("idempotent"):
-                        msg = "idempotent deploy (skipped existing resources)"
+                    push_step(rec)
+                    overall_ok = False
+                    abort_scenario = True
+                else:
+                    try:
+                        dep = deploy_topology(
+                            session, topology, scenario_run_id=scenario_run_id
+                        )
+                        actual = str(dep.get("status", ""))
+                        ok = actual == "ACTIVE"
+                        msg = None
+                        if dep.get("idempotent"):
+                            msg = "idempotent deploy (skipped existing resources)"
+                        rec = _step_record(
+                            name="deploy",
+                            action="deploy",
+                            expected="ACTIVE",
+                            actual=actual,
+                            step_passed=ok,
+                            duration_ms=_elapsed_ms(t_impl),
+                            message=msg,
+                        )
+                        if dep.get("idempotent"):
+                            rec["idempotent"] = True
+                            rec["skipped"] = dep.get("skipped") or []
+                        push_step(rec)
+                        topology = _load_topology(session, topology_id)
+                    except DeploymentError as exc:
+                        rec = _step_record(
+                            name="deploy",
+                            action="deploy",
+                            expected="ACTIVE",
+                            actual="FAILED",
+                            step_passed=False,
+                            duration_ms=_elapsed_ms(t_impl),
+                            message=str(exc),
+                        )
+                        push_step(rec)
+                        overall_ok = False
+                        abort_scenario = True
+
+            for step in parsed:
+                if abort_scenario:
+                    break
+                if time.perf_counter() - t_run > quota_settings.max_duration_seconds:
+                    t_step = time.perf_counter()
+                    rec = _step_record(
+                        name="duration_quota",
+                        action="quota",
+                        expected="within_limit",
+                        actual="FAILED",
+                        step_passed=False,
+                        duration_ms=_elapsed_ms(t_step),
+                        message=(
+                            f"scenario exceeded CLOUDNET_MAX_SCENARIO_DURATION_SECONDS="
+                            f"{quota_settings.max_duration_seconds}"
+                        ),
+                    )
+                    push_step(rec)
+                    overall_ok = False
+                    abort_scenario = True
+                    break
+                t_step = time.perf_counter()
+
+                if isinstance(step, _DeployStep):
+                    dep: dict[str, Any] | None = None
+                    try:
+                        dep = deploy_topology(session, topology, scenario_run_id=scenario_run_id)
+                        actual = str(dep.get("status", ""))
+                        ok = actual == "ACTIVE"
+                        msg = None
+                        if dep.get("idempotent"):
+                            msg = "idempotent deploy (skipped existing resources)"
+                    except DeploymentError as exc:
+                        actual = "FAILED"
+                        ok = False
+                        msg = str(exc)
+
+                    topology = _load_topology(session, topology.id)
                     rec = _step_record(
                         name="deploy",
                         action="deploy",
                         expected="ACTIVE",
                         actual=actual,
                         step_passed=ok,
-                        duration_ms=_elapsed_ms(t_impl),
+                        duration_ms=_elapsed_ms(t_step),
                         message=msg,
                     )
-                    if dep.get("idempotent"):
+                    if dep and dep.get("idempotent"):
                         rec["idempotent"] = True
                         rec["skipped"] = dep.get("skipped") or []
                     push_step(rec)
-                    topology = _load_topology(session, topology_id)
-                except DeploymentError as exc:
-                    rec = _step_record(
-                        name="deploy",
-                        action="deploy",
-                        expected="ACTIVE",
-                        actual="FAILED",
-                        step_passed=False,
-                        duration_ms=_elapsed_ms(t_impl),
-                        message=str(exc),
-                    )
-                    push_step(rec)
-                    overall_ok = False
-                    abort_scenario = True
-                    if cleanup_on_failure:
-                        _attempt_scenario_cleanup(session, topology)
+                    if not ok:
+                        overall_ok = False
+                        abort_scenario = True
 
-        for step in parsed:
-            if abort_scenario:
-                break
-            if time.perf_counter() - t_run > quota_settings.max_duration_seconds:
-                t_step = time.perf_counter()
-                rec = _step_record(
-                    name="duration_quota",
-                    action="quota",
-                    expected="within_limit",
-                    actual="FAILED",
-                    step_passed=False,
-                    duration_ms=_elapsed_ms(t_step),
-                    message=(
-                        f"scenario exceeded CLOUDNET_MAX_SCENARIO_DURATION_SECONDS="
-                        f"{quota_settings.max_duration_seconds}"
-                    ),
-                )
-                push_step(rec)
-                overall_ok = False
-                abort_scenario = True
-                break
-            t_step = time.perf_counter()
+                elif isinstance(step, _ValidateStep):
+                    exp_label = _validate_expected_label(step.expect)
+                    try:
+                        response = validate_topology_links(session=session, topology=topology)
+                    except ConnectivityTestError as exc:
+                        actual = "FAILED"
+                        ok = _step_matches_validate(actual, step.expect)
+                        push_step(
+                            _step_record(
+                                name="validate",
+                                action="validate",
+                                expected=exp_label,
+                                actual=actual,
+                                step_passed=ok,
+                                duration_ms=_elapsed_ms(t_step),
+                                message=str(exc),
+                            )
+                        )
+                        if not ok:
+                            overall_ok = False
+                        continue
+                    except Exception as exc:
+                        push_step(
+                            _step_record(
+                                name="validate",
+                                action="validate",
+                                expected=exp_label,
+                                actual="FAILED",
+                                step_passed=False,
+                                duration_ms=_elapsed_ms(t_step),
+                                message=f"internal error: {exc}",
+                            )
+                        )
+                        overall_ok = False
+                        continue
 
-            if isinstance(step, _DeployStep):
-                dep: dict[str, Any] | None = None
-                try:
-                    dep = deploy_topology(session, topology, scenario_run_id=scenario_run_id)
-                    actual = str(dep.get("status", ""))
-                    ok = actual == "ACTIVE"
-                    msg = None
-                    if dep.get("idempotent"):
-                        msg = "idempotent deploy (skipped existing resources)"
-                except DeploymentError as exc:
-                    actual = "FAILED"
-                    ok = False
-                    msg = str(exc)
+                    metrics = response.get("metrics") or {}
+                    agg_tests_total += int(metrics.get("tests_total") or 0)
+                    agg_tests_passed += int(metrics.get("tests_passed") or 0)
+                    agg_latencies.extend(metrics.get("reply_latencies_ms") or [])
 
-                topology = _load_topology(session, topology.id)
-                rec = _step_record(
-                    name="deploy",
-                    action="deploy",
-                    expected="ACTIVE",
-                    actual=actual,
-                    step_passed=ok,
-                    duration_ms=_elapsed_ms(t_step),
-                    message=msg,
-                )
-                if dep and dep.get("idempotent"):
-                    rec["idempotent"] = True
-                    rec["skipped"] = dep.get("skipped") or []
-                push_step(rec)
-                if not ok:
-                    overall_ok = False
-                    if cleanup_on_failure:
-                        _attempt_scenario_cleanup(session, topology)
-                    abort_scenario = True
-
-            elif isinstance(step, _ValidateStep):
-                exp_label = _validate_expected_label(step.expect)
-                try:
-                    response = validate_topology_links(session=session, topology=topology)
-                except ConnectivityTestError as exc:
-                    actual = "FAILED"
+                    actual = str(response["status"])
                     ok = _step_matches_validate(actual, step.expect)
                     push_step(
                         _step_record(
@@ -589,270 +722,247 @@ class ScenarioRunner:
                             actual=actual,
                             step_passed=ok,
                             duration_ms=_elapsed_ms(t_step),
-                            message=str(exc),
                         )
                     )
+                    if (
+                        actual == "PASSED"
+                        and step.expect == "pass"
+                        and failure_perf is not None
+                        and reconcile_after_failure
+                        and recovery_seconds is None
+                    ):
+                        recovery_seconds = time.perf_counter() - failure_perf
                     if not ok:
                         overall_ok = False
-                    continue
-                except Exception as exc:
+
+                elif isinstance(step, _FailStep):
+                    name = f"fail {step.node}"
+                    try:
+                        inject_node_down(
+                            session=session,
+                            topology=topology,
+                            node_name=step.node,
+                        )
+                        actual = "SUCCESS"
+                        ok = True
+                        msg = None
+                    except FailureError as exc:
+                        actual = "FAILED"
+                        ok = False
+                        msg = str(exc)
+
                     push_step(
                         _step_record(
-                            name="validate",
-                            action="validate",
-                            expected=exp_label,
-                            actual="FAILED",
-                            step_passed=False,
+                            name=name,
+                            action="fail",
+                            expected="SUCCESS",
+                            actual=actual,
+                            step_passed=ok,
                             duration_ms=_elapsed_ms(t_step),
-                            message=f"internal error: {exc}",
+                            message=msg,
+                            provider_action="stop_server",
                         )
                     )
-                    overall_ok = False
-                    continue
+                    if ok:
+                        failure_perf = time.perf_counter()
+                    if not ok:
+                        overall_ok = False
 
-                metrics = response.get("metrics") or {}
-                agg_tests_total += int(metrics.get("tests_total") or 0)
-                agg_tests_passed += int(metrics.get("tests_passed") or 0)
-                agg_latencies.extend(metrics.get("reply_latencies_ms") or [])
+                elif isinstance(step, _DriftStep):
+                    exp_drift = "DETECTED" if step.expect == "detected" else "CLEAN"
+                    try:
+                        drift = detect_topology_drift(session=session, topology=topology)
+                        detected = bool(drift.get("drift_detected"))
+                    except DriftError as exc:
+                        push_step(
+                            _step_record(
+                                name="drift",
+                                action="drift",
+                                expected=exp_drift,
+                                actual=None,
+                                step_passed=False,
+                                duration_ms=_elapsed_ms(t_step),
+                                message=str(exc),
+                            )
+                        )
+                        overall_ok = False
+                        continue
 
-                actual = str(response["status"])
-                ok = _step_matches_validate(actual, step.expect)
-                push_step(
-                    _step_record(
-                        name="validate",
-                        action="validate",
-                        expected=exp_label,
-                        actual=actual,
-                        step_passed=ok,
-                        duration_ms=_elapsed_ms(t_step),
-                    )
-                )
-                if (
-                    actual == "PASSED"
-                    and step.expect == "pass"
-                    and failure_perf is not None
-                    and reconcile_after_failure
-                    and recovery_seconds is None
-                ):
-                    recovery_seconds = time.perf_counter() - failure_perf
-                if not ok:
-                    overall_ok = False
-
-            elif isinstance(step, _FailStep):
-                name = f"fail {step.node}"
-                try:
-                    inject_node_down(
-                        session=session,
-                        topology=topology,
-                        node_name=step.node,
-                    )
-                    actual = "SUCCESS"
-                    ok = True
-                    msg = None
-                except FailureError as exc:
-                    actual = "FAILED"
-                    ok = False
-                    msg = str(exc)
-
-                push_step(
-                    _step_record(
-                        name=name,
-                        action="fail",
-                        expected="SUCCESS",
-                        actual=actual,
-                        step_passed=ok,
-                        duration_ms=_elapsed_ms(t_step),
-                        message=msg,
-                        provider_action="stop_server",
-                    )
-                )
-                if ok:
-                    failure_perf = time.perf_counter()
-                if not ok:
-                    overall_ok = False
-
-            elif isinstance(step, _DriftStep):
-                exp_drift = "DETECTED" if step.expect == "detected" else "CLEAN"
-                try:
-                    drift = detect_topology_drift(session=session, topology=topology)
-                    detected = bool(drift.get("drift_detected"))
-                except DriftError as exc:
+                    obs = "DETECTED" if detected else "CLEAN"
+                    ok = obs == exp_drift
                     push_step(
                         _step_record(
                             name="drift",
                             action="drift",
                             expected=exp_drift,
-                            actual=None,
-                            step_passed=False,
+                            actual=obs,
+                            step_passed=ok,
                             duration_ms=_elapsed_ms(t_step),
-                            message=str(exc),
+                            message=None
+                            if ok
+                            else (
+                                f"expected {exp_drift}, observed provider state indicates {obs}"
+                            ),
                         )
                     )
-                    overall_ok = False
-                    continue
+                    if not ok:
+                        overall_ok = False
 
-                obs = "DETECTED" if detected else "CLEAN"
-                ok = obs == exp_drift
-                push_step(
-                    _step_record(
-                        name="drift",
-                        action="drift",
-                        expected=exp_drift,
-                        actual=obs,
-                        step_passed=ok,
-                        duration_ms=_elapsed_ms(t_step),
-                        message=None
-                        if ok
-                        else (
-                            f"expected {exp_drift}, observed provider state indicates {obs}"
-                        ),
-                    )
-                )
-                if not ok:
-                    overall_ok = False
+                elif isinstance(step, _ReconcileStep):
+                    try:
+                        response = reconcile_topology(session=session, topology=topology)
+                        actual = str(response["status"])
+                    except ControlPlaneError as exc:
+                        push_step(
+                            _step_record(
+                                name="reconcile",
+                                action="reconcile",
+                                expected="RECONCILED",
+                                actual=None,
+                                step_passed=False,
+                                duration_ms=_elapsed_ms(t_step),
+                                message=str(exc),
+                            )
+                        )
+                        overall_ok = False
+                        continue
 
-            elif isinstance(step, _ReconcileStep):
-                try:
-                    response = reconcile_topology(session=session, topology=topology)
-                    actual = str(response["status"])
-                except ControlPlaneError as exc:
+                    ok = actual == "RECONCILED"
                     push_step(
                         _step_record(
                             name="reconcile",
                             action="reconcile",
                             expected="RECONCILED",
-                            actual=None,
-                            step_passed=False,
+                            actual=actual,
+                            step_passed=ok,
                             duration_ms=_elapsed_ms(t_step),
-                            message=str(exc),
                         )
                     )
-                    overall_ok = False
-                    continue
+                    if ok and failure_perf is not None:
+                        reconcile_after_failure = True
+                    if not ok:
+                        overall_ok = False
 
-                ok = actual == "RECONCILED"
-                push_step(
-                    _step_record(
-                        name="reconcile",
-                        action="reconcile",
-                        expected="RECONCILED",
-                        actual=actual,
-                        step_passed=ok,
-                        duration_ms=_elapsed_ms(t_step),
+                elif isinstance(step, _CleanupStep):
+                    try:
+                        result = cleanup_topology_deployment(session, topology)
+                        actual = str(result.get("status", ""))
+                        ok = actual in ("CLEANED", "SKIPPED")
+                        msg = result.get("detail") if actual == "SKIPPED" else None
+                    except DeploymentError as exc:
+                        actual = "FAILED"
+                        ok = False
+                        msg = str(exc)
+
+                    topology = _load_topology(session, topology.id)
+                    push_step(
+                        _step_record(
+                            name="cleanup",
+                            action="cleanup",
+                            expected="CLEANED",
+                            actual=actual,
+                            step_passed=ok,
+                            duration_ms=_elapsed_ms(t_step),
+                            message=msg,
+                        )
                     )
-                )
-                if ok and failure_perf is not None:
-                    reconcile_after_failure = True
-                if not ok:
-                    overall_ok = False
+                    if not ok:
+                        overall_ok = False
 
-            elif isinstance(step, _CleanupStep):
-                try:
-                    result = cleanup_topology_deployment(session, topology)
-                    actual = str(result.get("status", ""))
-                    ok = actual in ("CLEANED", "SKIPPED")
-                    msg = result.get("detail") if actual == "SKIPPED" else None
-                except DeploymentError as exc:
-                    actual = "FAILED"
-                    ok = False
-                    msg = str(exc)
+            avg_latency_ms = mean_latency_ms(agg_latencies) if agg_latencies else None
+            p95_latency_ms_computed = p95_latency_ms(agg_latencies) if agg_latencies else None
 
-                topology = _load_topology(session, topology.id)
-                push_step(
-                    _step_record(
-                        name="cleanup",
-                        action="cleanup",
-                        expected="CLEANED",
-                        actual=actual,
-                        step_passed=ok,
-                        duration_ms=_elapsed_ms(t_step),
-                        message=msg,
-                    )
-                )
-                if not ok:
-                    overall_ok = False
+            req_report, req_ok = evaluate_requirements(
+                requirements_spec,
+                tests_total=agg_tests_total,
+                tests_passed=agg_tests_passed,
+                avg_latency_ms=avg_latency_ms,
+                p95_latency_ms=p95_latency_ms_computed,
+                recovery_seconds=recovery_seconds,
+            )
+            if req_report is not None:
+                overall_ok = overall_ok and req_ok
 
-        avg_latency_ms = mean_latency_ms(agg_latencies) if agg_latencies else None
-        p95_latency_ms_computed = p95_latency_ms(agg_latencies) if agg_latencies else None
+            finished_at = utc_now()
+            duration_ms = int((time.perf_counter() - t_run) * 1000)
+            overall_status = "PASSED" if overall_ok else "FAILED"
 
-        req_report, req_ok = evaluate_requirements(
-            requirements_spec,
-            tests_total=agg_tests_total,
-            tests_passed=agg_tests_passed,
-            avg_latency_ms=avg_latency_ms,
-            p95_latency_ms=p95_latency_ms_computed,
-            recovery_seconds=recovery_seconds,
-        )
-        if req_report is not None:
-            overall_ok = overall_ok and req_ok
+            saved = _finalize_scenario_run(
+                session,
+                run,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                overall_status=overall_status,
+                step_dicts=step_records,
+                scenario_name=scenario_name,
+            )
 
-        finished_at = utc_now()
-        duration_ms = int((time.perf_counter() - t_run) * 1000)
-        overall_status = "PASSED" if overall_ok else "FAILED"
+            log_scenario_structured(
+                "scenario_completed",
+                scenario_run_id=saved.id,
+                topology_id=topology_id,
+                provider=provider_name,
+                status=overall_status,
+                duration_ms=duration_ms,
+            )
 
-        saved = _finalize_scenario_run(
-            session,
-            run,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            overall_status=overall_status,
-            step_dicts=step_records,
-            scenario_name=scenario_name,
-        )
-
-        log_scenario_structured(
-            "scenario_completed",
-            scenario_run_id=saved.id,
-            topology_id=topology_id,
-            provider=provider_name,
-            status=overall_status,
-            duration_ms=duration_ms,
-        )
-
-        if cleanup_after_run or (overall_status == "FAILED" and cleanup_on_failure):
-            _attempt_scenario_cleanup(session, topology)
-
-        if req_report:
-            for category, payload in req_report.items():
-                status = str(payload.get("status") or "")
-                emit_event(
-                    session,
-                    topology_id,
-                    "REQUIREMENT_EVALUATED",
-                    status,
-                    f"Requirement {category}: {status}",
-                    {
-                        "category": category,
-                        "scenario_run_id": saved.id,
-                        "detail": payload,
-                    },
-                )
-                if status != "PASSED":
+            if req_report:
+                for category, payload in req_report.items():
+                    status = str(payload.get("status") or "")
                     emit_event(
                         session,
                         topology_id,
-                        "REQUIREMENT_FAILED",
-                        "FAILED",
-                        f"Requirement {category} not met",
+                        "REQUIREMENT_EVALUATED",
+                        status,
+                        f"Requirement {category}: {status}",
                         {
                             "category": category,
                             "scenario_run_id": saved.id,
                             "detail": payload,
                         },
                     )
+                    if status != "PASSED":
+                        emit_event(
+                            session,
+                            topology_id,
+                            "REQUIREMENT_FAILED",
+                            "FAILED",
+                            f"Requirement {category} not met",
+                            {
+                                "category": category,
+                                "scenario_run_id": saved.id,
+                                "detail": payload,
+                            },
+                        )
 
-        return scenario_result_response(
-            scenario_name=scenario_name,
-            scenario_run_id=saved.id,
-            topology_id=topology_id,
-            topology_name=topology_name,
-            overall_status=overall_status,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            steps=step_records,
-            requirements=req_report,
-        )
+            if cleanup_after_run or (overall_status == "FAILED" and cleanup_on_failure):
+                cleanup_info = _attempt_scenario_cleanup(session, topology)
+            else:
+                cleanup_info = {
+                    "outcome": "SKIPPED",
+                    "message": "cleanup not requested for this run",
+                }
+
+            failed_label = (
+                _first_failed_step_label(step_records)
+                if overall_status == "FAILED"
+                else None
+            )
+
+            return scenario_result_response(
+                scenario_name=scenario_name,
+                scenario_run_id=saved.id,
+                topology_id=topology_id,
+                topology_name=topology_name,
+                overall_status=overall_status,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                steps=step_records,
+                requirements=req_report,
+                failed_step=failed_label,
+                cleanup=cleanup_info,
+            )
 
 
 def run_scenario(

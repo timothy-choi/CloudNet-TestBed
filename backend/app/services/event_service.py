@@ -13,12 +13,19 @@ def emit_event(
     message: str,
     metadata: dict[str, Any] | None = None,
 ) -> Event:
+    from app.services.trace_context import current_trace_metadata
+
+    merged: dict[str, Any] = dict(metadata or {})
+    for k, v in current_trace_metadata().items():
+        merged.setdefault(k, v)
+    merged.setdefault("topology_id", topology_id)
+
     event = Event(
         topology_id=topology_id,
         type=event_type,
         status=status,
         message=message,
-        event_metadata=metadata or {},
+        event_metadata=merged,
     )
     session.add(event)
     session.commit()

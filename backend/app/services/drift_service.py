@@ -14,6 +14,7 @@ from app.services.deployment_service import (
     compile_deployment_plan,
     list_topology_resources,
 )
+from app.services.trace_logging import log_trace
 
 
 class DriftError(Exception):
@@ -42,6 +43,15 @@ def detect_topology_drift(
 ) -> dict[str, Any]:
     if topology.id is None:
         raise DriftError("topology must be saved before drift detection")
+
+    log_trace(
+        "INFO",
+        "drift_check",
+        status="STARTED",
+        message=f"topology={topology.name}",
+        resource_type="topology",
+        resource_id=str(topology.id),
+    )
 
     provider = provider or get_provider()
     if provider.name not in {"aws", "mock"}:

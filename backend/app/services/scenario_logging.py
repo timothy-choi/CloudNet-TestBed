@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from typing import Any
 
-_logger = logging.getLogger("cloudnet.scenario")
+from app.services.trace_logging import log_scenario_line
 
-
-def log_scenario_structured(event: str, **fields: Any) -> None:
-    payload: dict[str, Any] = {"event": event, **fields}
-    _logger.info(json.dumps(payload, default=str))
+# Retain old name: logs to cloudnet.trace with action=event name
+log_scenario_structured = log_scenario_line

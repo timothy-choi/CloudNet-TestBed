@@ -335,7 +335,9 @@ def _print_scenario_report(body: dict) -> None:
     scenario_name = body.get("scenario", "scenario")
     print(f"Running scenario: {scenario_name}")
     if body.get("scenario_run_id") is not None:
-        print(f"scenario_run_id={body['scenario_run_id']}  topology_id={body.get('topology_id')}")
+        sid = body["scenario_run_id"]
+        ref = body.get("scenario_run_ref") or f"run-{sid}"
+        print(f"scenario_run_id={sid}  scenario_run_ref={ref}  topology_id={body.get('topology_id')}")
     print()
     steps = body.get("steps") or []
     for i, step in enumerate(steps, start=1):
@@ -346,6 +348,30 @@ def _print_scenario_report(body: dict) -> None:
     print(f"Scenario {overall}")
     total_ms = int(body.get("duration_ms") or 0)
     print(f"Total time: {_fmt_total_time_ms(total_ms)}")
+    if overall == "FAILED":
+        print()
+        print("Scenario FAILED")
+        if body.get("scenario_run_ref"):
+            print(f"Run ID: {body['scenario_run_ref']}")
+        elif body.get("scenario_run_id") is not None:
+            print(f"Run ID: run-{body['scenario_run_id']}")
+        fs = body.get("failed_step")
+        if fs:
+            print(f"Failed step: {fs}")
+        cleanup = body.get("cleanup") or {}
+        outcome = str(cleanup.get("outcome") or "").upper()
+        if outcome == "SUCCESS":
+            print("Cleanup: SUCCESS")
+        elif outcome == "SKIPPED":
+            print(f"Cleanup: SKIPPED ({cleanup.get('message', 'not requested')})")
+        elif outcome == "FAILED":
+            print("Cleanup: FAILED")
+        else:
+            print(f"Cleanup: {cleanup}")
+        dbg = body.get("debug") or {}
+        if dbg.get("events_url"):
+            print(f"Events: GET {dbg['events_url']}")
+        print(dbg.get("logs", "Inspect structured logs (logger cloudnet.trace)."))
 
 
 def cmd_plan(client: httpx.Client, args: argparse.Namespace) -> int:

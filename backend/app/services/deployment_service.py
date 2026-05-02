@@ -19,6 +19,7 @@ from app.resource_types import (
     non_aws_deploy_resource_labels,
 )
 from app.services.provider_retry import call_with_retry
+from app.services.trace_logging import log_trace
 from app.topology_compiler import compile_topology
 
 
@@ -255,6 +256,14 @@ def deploy_topology(
     response_resources: list[dict[str, Any]] = []
     network_ids_by_name: dict[str, str] = {}
     provider = get_provider()
+    log_trace(
+        "INFO",
+        "deploy_topology",
+        status="STARTED",
+        message=f"topology={topology.name}",
+        resource_type="topology",
+        resource_id=str(topology.id),
+    )
     is_aws = provider.name == "aws"
     host_names = {node.name for node in topology.nodes if node.type == "host"}
     warnings = multi_homed_warnings(plan)
@@ -301,6 +310,14 @@ def deploy_topology(
                 session.refresh(network_resource)
                 created_resources.append(network_resource)
                 response_resources.append(deployment_summary_resource(network_resource))
+                log_trace(
+                    "INFO",
+                    "deploy_network",
+                    status="CREATED",
+                    message=f"name={network['name']}",
+                    resource_type=net_t,
+                    resource_id=str(network["id"]),
+                )
 
                 subnet_name = f"{network_plan['name']}-subnet"
                 subnet = call_with_retry(
@@ -322,6 +339,14 @@ def deploy_topology(
                 session.refresh(subnet_resource)
                 created_resources.append(subnet_resource)
                 response_resources.append(deployment_summary_resource(subnet_resource))
+                log_trace(
+                    "INFO",
+                    "deploy_subnet",
+                    status="CREATED",
+                    message=f"name={subnet['name']}",
+                    resource_type=subnet_t,
+                    resource_id=str(subnet["id"]),
+                )
 
             for server_plan in plan["servers"]:
                 if server_plan["type"] != "host":
@@ -351,7 +376,24 @@ def deploy_topology(
                 created_resources.append(server_resource)
                 server_summary = deployment_summary_resource(server_resource)
                 response_resources.append(server_summary)
+                log_trace(
+                    "INFO",
+                    "deploy_instance",
+                    status="CREATED",
+                    message=f"name={server['name']}",
+                    resource_type=srv_t,
+                    resource_id=str(server["id"]),
+                )
     except Exception as exc:
+        log_trace(
+            "ERROR",
+            "deploy_topology",
+            status="FAILED",
+            message=str(exc),
+            resource_type="topology",
+            resource_id=str(topology.id) if topology.id is not None else None,
+            error_type=type(exc).__name__,
+        )
         topology.status = "FAILED"
         session.add(topology)
         session.commit()

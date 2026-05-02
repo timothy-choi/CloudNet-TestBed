@@ -732,11 +732,12 @@ def test_events_are_created_on_reconcile(
             "severity": "warning",
         }
     ]
-    assert events[2]["metadata"] == {
+    assert {k: events[2]["metadata"][k] for k in ("node", "action", "result")} == {
         "node": "client-b",
         "action": "start",
         "result": "started",
     }
+    assert events[2]["metadata"].get("topology_id") == topology_id
     assert events[3]["message"] == "Reconcile complete"
 
 

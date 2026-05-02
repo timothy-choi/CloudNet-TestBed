@@ -17,6 +17,7 @@ from app.services.deployment_service import (
 )
 from app.services.drift_service import detect_topology_drift
 from app.services.local_state_store import resources_from_local_state
+from app.services.trace_logging import log_trace
 
 
 class ControlPlaneError(Exception):
@@ -62,6 +63,15 @@ def plan_topology(topology: Topology) -> dict[str, Any]:
 def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
     if topology.id is None:
         raise ControlPlaneError("topology must be saved before reconcile")
+
+    log_trace(
+        "INFO",
+        "reconcile_topology",
+        status="STARTED",
+        message=f"topology={topology.name}",
+        resource_type="topology",
+        resource_id=str(topology.id),
+    )
 
     provider = get_provider()
     if provider.name not in {"aws", "mock"}:

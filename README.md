@@ -43,6 +43,17 @@ CloudNet ensures **repeated runs do not create duplicate infrastructure** for th
 
 ---
 
+## Debugging and traceability
+
+Every **scenario run** is assigned a **numeric `scenario_run_id`** when processing starts. The API also returns **`scenario_run_ref`** (for example **`run-42`**) so **logs**, **CLI output**, and **JSON responses** can be matched without ambiguities.
+
+- **Correlating events** — For runs that execute under the active trace context, topology timeline events from **`GET /topologies/{topology_id}/events`** include **`scenario_run_id`**, **`scenario_run_ref`**, **`topology_id`**, and **`provider`** in each event’s **`metadata`** (merged when not already set). Use the timeline to see **SCENARIO_RUN**, **SCENARIO_FAILED**, validation, and requirement events in order.
+- **Structured logs** — Control-plane actions emit **one JSON object per line** on logger **`cloudnet.trace`**, with **`timestamp`**, **`level`**, **`action`**, **`status`**, **`message`**, and optional **`resource_type`** / **`resource_id`**, plus correlation fields when a scenario is running. **`cloudnet.scenario`**-style helpers route into the same format. Grep or ship logs filtered by **`scenario_run_id`** or **`scenario_run_ref`**.
+- **Partial failure** — A failed run returns **`status: FAILED`**, **`failed_step`**, a **`SCENARIO_FAILED`** event, and a **`cleanup`** summary when cleanup runs. The response **`debug`** object points at **`/topologies/{id}/events`** and **`/scenarios/{id}/results`**, and notes how to inspect traces. **Mock** chaos via **`CLOUDNET_MOCK_*_FAILS`** (no new AWS services) is the supported way to test **network / subnet / instance** stage failures and confirm **janitor-style cleanup** leaves no deployment rows.
+- **Retries** — Transient provider errors log **`RETRYING`** on **`cloudnet.trace`** with **`retry_attempt`**, **`error_type`**, and **`max_retries`**; success after a retry logs **`SUCCEEDED_AFTER_RETRY`**. The human-readable logger **`cloudnet.retry`** is unchanged for ad-hoc tailing.
+
+---
+
 ## Failure handling
 
 CloudNet treats **transient provider errors** (throttles, brief AWS/API faults) as **retryable** and applies bounded retries with exponential backoff (**1s → 2s → 4s**, up to **`CLOUDNET_PROVIDER_MAX_RETRIES`**, default **3**) on **VPC, subnet, and instance creation** during deploy, and on **AWS SSM** send/command paths used for ping and exec. **Invalid configuration or topology** failures are **non-retryable** and surface immediately (see **`app/services/provider_errors.py`**, `is_retryable`).

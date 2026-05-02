@@ -214,7 +214,7 @@ def test_structured_logs_include_scenario_run_id(
         },
     )
 
-    caplog.set_level(logging.INFO, logger="cloudnet.scenario")
+    caplog.set_level(logging.INFO, logger="cloudnet.trace")
 
     response = client.post(
         "/scenarios/run",
@@ -234,14 +234,14 @@ def test_structured_logs_include_scenario_run_id(
 
     payloads = []
     for rec in caplog.records:
-        if rec.name != "cloudnet.scenario":
+        if rec.name != "cloudnet.trace":
             continue
         try:
             payloads.append(json.loads(rec.message))
         except json.JSONDecodeError:
             continue
 
-    assert payloads, "expected JSON lines on cloudnet.scenario"
+    assert payloads, "expected JSON lines on cloudnet.trace"
     ids_found = {p.get("scenario_run_id") for p in payloads}
     assert run_id in ids_found
     for p in payloads:

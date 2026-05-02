@@ -10,6 +10,7 @@ from typing import TypeVar
 
 from app.core.config import _env_bool
 from app.services.provider_errors import error_summary, is_retryable
+from app.services.trace_logging import log_trace
 
 logger = logging.getLogger("cloudnet.retry")
 
@@ -45,6 +46,15 @@ def call_with_retry(
             result = fn()
             if attempt > 0:
                 logger.info("✔ %s succeeded after retry", operation)
+                log_trace(
+                    "INFO",
+                    "provider_operation",
+                    status="SUCCEEDED_AFTER_RETRY",
+                    message=operation,
+                    operation=operation,
+                    retry_attempt=attempt + 1,
+                    max_retries=limit,
+                )
             return result
         except BaseException as exc:
             last_exc = exc
@@ -57,6 +67,16 @@ def call_with_retry(
                 attempt + 1,
                 limit,
                 error_summary(exc),
+            )
+            log_trace(
+                "WARNING",
+                "provider_operation",
+                status="RETRYING",
+                message=error_summary(exc),
+                operation=operation,
+                retry_attempt=attempt + 1,
+                max_retries=limit,
+                error_type=type(exc).__name__,
             )
             if not _env_bool("CLOUDNET_TEST_FAST_RETRY", default=False):
                 time.sleep(delay)

@@ -6,6 +6,7 @@ from app.models import DeploymentResource, FailureEvent, Node, Topology
 from app.providers.factory import get_provider
 from app.resource_types import INSTANCE_RESOURCE_TYPES
 from app.services.deployment_service import list_topology_resources
+from app.services.trace_logging import log_trace
 
 
 class FailureError(Exception):
@@ -111,6 +112,16 @@ def _record_node_action(
     except Exception as exc:
         status = "FAILED"
         output = str(exc)
+
+    log_trace(
+        "INFO",
+        "failure_injection",
+        status=status,
+        message=(output or "")[:500],
+        resource_type="instance",
+        resource_id=server_resource.openstack_id,
+        injection_action=action,
+    )
 
     event = FailureEvent(
         topology_id=topology.id,
