@@ -11,7 +11,6 @@ from app.db import get_session
 from app.main import app
 from app.models import DeploymentResource
 from app.providers.mock_provider import MockProvider
-from app.routes import topology as topology_routes
 from app.services import control_plane_service, deployment_service, drift_service
 
 
@@ -645,28 +644,51 @@ def test_event_is_created_on_validation(
     client: TestClient,
     monkeypatch,
 ) -> None:
+    from app.models import DeploymentResource
+    from app.services import connectivity_service
+
+    monkeypatch.setenv("CLOUDNET_PROVIDER", "mock")
     topology_id = create_topology(client)
-    monkeypatch.setattr(
-        topology_routes,
-        "validate_topology_links",
-        lambda session, topology: {
-            "topology_id": topology.id,
-            "status": "PASSED",
-            "results": [
-                {"source": "client-a", "target": "client-b", "status": "PASSED"}
-            ],
-        },
-    )
+
+    session_override = app.dependency_overrides[get_session]
+    gen = session_override()
+    session = next(gen)
+    try:
+        session.add(
+            DeploymentResource(
+                topology_id=topology_id,
+                resource_type="provider_instance",
+                resource_name="client-a",
+                openstack_id="srv-a",
+            )
+        )
+        session.add(
+            DeploymentResource(
+                topology_id=topology_id,
+                resource_type="provider_instance",
+                resource_name="client-b",
+                openstack_id="srv-b",
+            )
+        )
+        session.commit()
+    finally:
+        gen.close()
+
+    monkeypatch.setattr(connectivity_service, "get_provider", lambda: MockProvider())
 
     response = client.post(f"/topologies/{topology_id}/validate")
 
     assert response.status_code == 200
     events = client.get(f"/topologies/{topology_id}/events").json()["events"]
+    assert [event["type"] for event in events] == [
+        "VALIDATION_STARTED",
+        "VALIDATION_COMPLETE",
+        "VALIDATION",
+    ]
     assert events[-1]["type"] == "VALIDATION"
     assert events[-1]["status"] == "SUCCESS"
-    assert events[-1]["metadata"]["results"] == [
-        {"source": "client-a", "target": "client-b", "status": "PASSED"}
-    ]
+    assert events[-1]["metadata"]["results"][0]["status"] == "PASSED"
+    assert events[1]["metadata"].get("duration_ms") is not None
 
 
 def test_events_are_created_on_reconcile(

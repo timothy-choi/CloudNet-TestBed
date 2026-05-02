@@ -557,14 +557,6 @@ def validate_topology_endpoint(
         response = validate_topology_links(session=session, topology=topology)
     except ConnectivityTestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    emit_event(
-        session=session,
-        topology_id=topology_id,
-        event_type="VALIDATION",
-        status="SUCCESS" if response["status"] == "PASSED" else "FAILED",
-        message=f"Topology validation {response['status']}",
-        metadata={"results": response["results"]},
-    )
     return response
 
 

@@ -1,3 +1,4 @@
+from collections import Counter
 from collections.abc import Generator
 from pathlib import Path
 import sys
@@ -411,11 +412,25 @@ def test_validate_endpoint_runs_ping_per_link(
 ) -> None:
     calls: list[tuple[str, str]] = []
 
-    def create_ping_test(session, topology, source, target):
+    def fake_ping_compute(
+        topology_id: int,
+        source: str,
+        target: str,
+        bind: object,
+    ) -> tuple[str, str, str, str]:
         calls.append((source, target))
-        return SimpleNamespace(status="PASSED")
+        return (
+            "PASSED",
+            "3 packets transmitted, 3 received, 0% packet loss",
+            source,
+            target,
+        )
 
-    monkeypatch.setattr(connectivity_service, "create_ping_test", create_ping_test)
+    monkeypatch.setattr(
+        connectivity_service,
+        "_ping_validate_compute",
+        fake_ping_compute,
+    )
     response = client.post(
         "/topologies",
         json={
@@ -436,50 +451,56 @@ def test_validate_endpoint_runs_ping_per_link(
     response = client.post(f"/topologies/{topology_id}/validate")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "topology_id": topology_id,
-        "status": "PASSED",
-        "results": [
-            {
-                "source": "frontend",
-                "target": "backend",
-                "status": "PASSED",
-                "reply_latencies_ms": [],
-            },
-            {
-                "source": "backend",
-                "target": "db",
-                "status": "PASSED",
-                "reply_latencies_ms": [],
-            },
-        ],
-        "metrics": {
-            "tests_total": 2,
-            "tests_passed": 2,
-            "tests_failed": 0,
+    body = response.json()
+    assert body["topology_id"] == topology_id
+    assert body["status"] == "PASSED"
+    assert body["results"] == [
+        {
+            "source": "frontend",
+            "target": "backend",
+            "status": "PASSED",
             "reply_latencies_ms": [],
-            "avg_latency_ms": None,
-            "p95_latency_ms": None,
         },
-    }
-    assert calls == [("frontend", "backend"), ("backend", "db")]
+        {
+            "source": "backend",
+            "target": "db",
+            "status": "PASSED",
+            "reply_latencies_ms": [],
+        },
+    ]
+    assert body["metrics"]["tests_total"] == 2
+    assert body["metrics"]["tests_passed"] == 2
+    assert body["metrics"]["tests_failed"] == 0
+    assert "duration_ms" in body
+    assert "validation_duration_ms" in body["metrics"]
+    assert Counter(calls) == Counter(
+        [("frontend", "backend"), ("backend", "db")]
+    )
 
 
 def test_validate_endpoint_failed_link_makes_overall_failed(
     client: TestClient,
     monkeypatch,
 ) -> None:
-    statuses = {
-        ("frontend", "backend"): "PASSED",
-        ("backend", "db"): "FAILED",
-    }
+    def fake_ping_compute(
+        topology_id: int,
+        source: str,
+        target: str,
+        bind: object,
+    ) -> tuple[str, str, str, str]:
+        if (source, target) == ("backend", "db"):
+            return "FAILED", "ping failed", source, target
+        return (
+            "PASSED",
+            "3 packets transmitted, 3 received, 0% packet loss",
+            source,
+            target,
+        )
 
     monkeypatch.setattr(
         connectivity_service,
-        "create_ping_test",
-        lambda session, topology, source, target: SimpleNamespace(
-            status=statuses[(source, target)]
-        ),
+        "_ping_validate_compute",
+        fake_ping_compute,
     )
     response = client.post(
         "/topologies",

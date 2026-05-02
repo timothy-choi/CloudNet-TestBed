@@ -12,6 +12,7 @@ from app.core.config import (
     get_cloudnet_provider,
     get_openstack_settings,
     get_scenario_quota_settings,
+    get_validation_concurrency_settings,
 )
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -133,6 +134,18 @@ def validate_cloudnet_config() -> dict[str, Any]:
             "id": "mock_mode_without_aws",
             "ok": provider != "aws" or _aws_credentials_available(),
             "detail": "mock/openstack/proxmox do not require AWS credentials",
+        }
+    )
+
+    vc = get_validation_concurrency_settings()
+    checks.append(
+        {
+            "id": "validation_concurrency",
+            "ok": vc.max_parallel_validations >= 1 and vc.validation_timeout_seconds >= 1,
+            "detail": {
+                "MAX_PARALLEL_VALIDATIONS": vc.max_parallel_validations,
+                "VALIDATION_TIMEOUT_SECONDS": vc.validation_timeout_seconds,
+            },
         }
     )
 

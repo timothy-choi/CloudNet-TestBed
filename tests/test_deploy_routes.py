@@ -14,6 +14,7 @@ from app.routes import topology as topology_routes
 from app.services import access_service
 from app.services import deployment_service
 from app.services import topology_status_service
+from app.services.event_service import emit_event
 
 
 @pytest.fixture
@@ -831,6 +832,14 @@ def test_topology_status_endpoint_summarizes_resources_and_validation(
     provider = mock_deployment_provider(monkeypatch)
 
     def fake_validate(session, topology):
+        emit_event(
+            session,
+            topology.id,
+            "VALIDATION",
+            "SUCCESS",
+            "Topology validation PASSED",
+            metadata={"results": []},
+        )
         return {
             "topology_id": topology.id,
             "status": "PASSED",

@@ -134,3 +134,16 @@ def get_scenario_quota_settings() -> ScenarioQuotaSettings:
         max_duration_seconds=int(os.getenv("CLOUDNET_MAX_SCENARIO_DURATION_SECONDS", "7200")),
         max_cost_risk_units=int(os.getenv("CLOUDNET_MAX_SCENARIO_COST_RISK_UNITS", "48")),
     )
+
+
+@dataclass(frozen=True)
+class ValidationConcurrencySettings:
+    max_parallel_validations: int
+    validation_timeout_seconds: int
+
+
+def get_validation_concurrency_settings() -> ValidationConcurrencySettings:
+    return ValidationConcurrencySettings(
+        max_parallel_validations=max(1, int(os.getenv("MAX_PARALLEL_VALIDATIONS", "5"))),
+        validation_timeout_seconds=max(1, int(os.getenv("VALIDATION_TIMEOUT_SECONDS", "30"))),
+    )

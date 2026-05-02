@@ -1,10 +1,18 @@
+from __future__ import annotations
+
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any
 
 from sqlmodel import Session, select
 
+from app.core.config import ValidationConcurrencySettings, get_validation_concurrency_settings
 from app.models import ConnectivityTest, DeploymentResource, Node, Topology
 from app.providers.factory import get_provider
 from app.resource_types import INSTANCE_RESOURCE_TYPES
+from app.services.event_service import emit_event
 from app.services.deployment_service import list_topology_resources
 from app.services.ping_metrics import (
     extract_icmp_latencies_ms,
@@ -12,6 +20,7 @@ from app.services.ping_metrics import (
     p95_latency_ms,
 )
 
+logger = logging.getLogger(__name__)
 
 CIRROS_USERNAME = "cirros"
 CIRROS_PASSWORD = "gocubsgo"
@@ -56,15 +65,12 @@ def list_connectivity_tests(
     return list(session.exec(statement).all())
 
 
-def create_ping_test(
+def _execute_ping_core(
     session: Session,
     topology: Topology,
     source: str,
     target: str,
-) -> ConnectivityTest:
-    if topology.id is None:
-        raise ConnectivityTestError("topology must be saved before testing")
-
+) -> tuple[str, str]:
     source_node = _host_node_by_name(topology, source)
     target_node = _host_node_by_name(topology, target)
     if source_node is None:
@@ -73,7 +79,7 @@ def create_ping_test(
         raise ConnectivityTestError(f"unknown target host '{target}'")
 
     server_resources = _server_resources_by_name(
-        list_topology_resources(session, topology.id)
+        list_topology_resources(session, topology.id)  # type: ignore[arg-type]
     )
     if source not in server_resources:
         raise ConnectivityTestError(f"source server '{source}' has not been deployed")
@@ -107,6 +113,40 @@ def create_ping_test(
     except Exception as exc:
         output = str(exc)
         status = "FAILED"
+    return status, output
+
+
+def _ping_validate_compute(
+    topology_id: int,
+    source: str,
+    target: str,
+    bind: Any,
+) -> tuple[str, str, str, str]:
+    """Run ping in a worker thread; returns (status, output, source, target). No DB writes."""
+    with Session(bind) as session:
+        topology = session.get(Topology, topology_id)
+        if topology is None:
+            return "FAILED", "topology not found", source, target
+        try:
+            st, out = _execute_ping_core(session, topology, source, target)
+        except ConnectivityTestError as exc:
+            return "FAILED", str(exc), source, target
+        return st, out, source, target
+
+
+def create_ping_test(
+    session: Session,
+    topology: Topology,
+    source: str,
+    target: str,
+) -> ConnectivityTest:
+    if topology.id is None:
+        raise ConnectivityTestError("topology must be saved before testing")
+
+    try:
+        status, output = _execute_ping_core(session, topology, source, target)
+    except ConnectivityTestError:
+        raise
 
     test = ConnectivityTest(
         topology_id=topology.id,
@@ -121,83 +161,284 @@ def create_ping_test(
     return test
 
 
+def _record_connectivity_result(
+    session: Session,
+    topology_id: int,
+    source: str,
+    target: str,
+    status: str,
+    output: str,
+) -> None:
+    test = ConnectivityTest(
+        topology_id=topology_id,
+        source_node=source,
+        target_node=target,
+        status=status,
+        output=output,
+    )
+    session.add(test)
+    session.commit()
+
+
+def _result_dict_for_status(
+    source: str,
+    target: str,
+    status: str,
+    output: str,
+) -> dict[str, Any]:
+    reply_latencies_ms = (
+        extract_icmp_latencies_ms(output) if status == "PASSED" else []
+    )
+    return {
+        "source": source,
+        "target": target,
+        "status": status,
+        "reply_latencies_ms": reply_latencies_ms,
+    }
+
+
 def validate_topology_links(
     session: Session,
     topology: Topology,
+    *,
+    emit_validation_events: bool = True,
 ) -> dict[str, Any]:
-    results: list[dict[str, Any]] = []
+    if topology.id is None:
+        raise ConnectivityTestError("topology must be saved before validation")
+
+    settings = get_validation_concurrency_settings()
+    started = time.perf_counter()
 
     if topology.firewall_rules:
-        for rule in topology.firewall_rules:
-            if rule.protocol != "icmp":
-                results.append(
-                    {
-                        "source": rule.from_node,
-                        "target": rule.to_node,
-                        "status": "SKIPPED",
-                    }
-                )
-                continue
-
-            test = create_ping_test(
-                session=session,
-                topology=topology,
-                source=rule.from_node,
-                target=rule.to_node,
-            )
-            output = getattr(test, "output", "") or ""
-            reply_latencies_ms = (
-                extract_icmp_latencies_ms(output) if test.status == "PASSED" else []
-            )
-            results.append(
-                {
-                    "source": rule.from_node,
-                    "target": rule.to_node,
-                    "status": test.status,
-                    "reply_latencies_ms": reply_latencies_ms,
-                }
-            )
-
-        overall_status = (
-            "FAILED"
-            if any(result["status"] == "FAILED" for result in results)
-            else "PASSED"
-        )
-        return _validation_response_with_metrics(topology.id, overall_status, results)
-
-    for link in topology.links:
-        test = create_ping_test(
+        return _validate_topology_links_firewall_rules(
             session=session,
             topology=topology,
-            source=link.from_node,
-            target=link.to_node,
+            settings=settings,
+            started=started,
+            emit_validation_events=emit_validation_events,
         )
 
-        output = getattr(test, "output", "") or ""
-        reply_latencies_ms = (
-            extract_icmp_latencies_ms(output) if test.status == "PASSED" else []
+    return _validate_topology_links_plain_links(
+        session=session,
+        topology=topology,
+        settings=settings,
+        started=started,
+        emit_validation_events=emit_validation_events,
+    )
+
+
+def _validate_topology_links_plain_links(
+    session: Session,
+    topology: Topology,
+    *,
+    settings: ValidationConcurrencySettings,
+    started: float,
+    emit_validation_events: bool,
+) -> dict[str, Any]:
+    slots: list[dict[str, Any] | None] = [None] * len(topology.links)
+    ping_jobs = [
+        (i, link.from_node, link.to_node) for i, link in enumerate(topology.links)
+    ]
+    link_count = len(ping_jobs)
+
+    if emit_validation_events:
+        emit_event(
+            session=session,
+            topology_id=topology.id,  # type: ignore[arg-type]
+            event_type="VALIDATION_STARTED",
+            status="STARTED",
+            message=f"Topology validation started ({link_count} links)",
+            metadata={"link_count": link_count},
         )
-        results.append(
-            {
-                "source": link.from_node,
-                "target": link.to_node,
-                "status": test.status,
-                "reply_latencies_ms": reply_latencies_ms,
-            }
-        )
+
+    _run_ping_jobs_parallel(
+        session=session,
+        topology_id=topology.id,  # type: ignore[arg-type]
+        ping_jobs=ping_jobs,
+        slots=slots,
+        settings=settings,
+    )
+
+    results = [slots[i] for i in range(len(slots))]
+    duration_ms = int((time.perf_counter() - started) * 1000)
 
     overall_status = (
         "PASSED"
-        if results and all(result["status"] == "PASSED" for result in results)
+        if results and all(r["status"] == "PASSED" for r in results)
         else "FAILED"
     )
-    return _validation_response_with_metrics(topology.id, overall_status, results)
+
+    payload = _validation_response_with_metrics(
+        topology.id,
+        overall_status,
+        results,
+        validation_duration_ms=duration_ms,
+    )
+
+    if emit_validation_events:
+        metrics = payload.get("metrics") or {}
+        emit_event(
+            session=session,
+            topology_id=topology.id,  # type: ignore[arg-type]
+            event_type="VALIDATION_COMPLETE",
+            status="SUCCESS" if overall_status == "PASSED" else "FAILED",
+            message=f"Topology validation complete ({metrics.get('tests_passed')}/{metrics.get('tests_total')} passed)",
+            metadata={
+                "tests_passed": metrics.get("tests_passed"),
+                "tests_failed": metrics.get("tests_failed"),
+                "duration_ms": duration_ms,
+            },
+        )
+        emit_event(
+            session=session,
+            topology_id=topology.id,  # type: ignore[arg-type]
+            event_type="VALIDATION",
+            status="SUCCESS" if overall_status == "PASSED" else "FAILED",
+            message=f"Topology validation {overall_status}",
+            metadata={"results": payload["results"]},
+        )
+
+    return payload
+
+
+def _validate_topology_links_firewall_rules(
+    session: Session,
+    topology: Topology,
+    *,
+    settings: ValidationConcurrencySettings,
+    started: float,
+    emit_validation_events: bool,
+) -> dict[str, Any]:
+    slots: list[dict[str, Any] | None] = [None] * len(topology.firewall_rules)
+    ping_jobs: list[tuple[int, str, str]] = []
+
+    for i, rule in enumerate(topology.firewall_rules):
+        if rule.protocol != "icmp":
+            slots[i] = {
+                "source": rule.from_node,
+                "target": rule.to_node,
+                "status": "SKIPPED",
+            }
+        else:
+            ping_jobs.append((i, rule.from_node, rule.to_node))
+
+    link_count = len(ping_jobs)
+
+    if emit_validation_events:
+        emit_event(
+            session=session,
+            topology_id=topology.id,  # type: ignore[arg-type]
+            event_type="VALIDATION_STARTED",
+            status="STARTED",
+            message=f"Topology validation started ({link_count} ICMP checks)",
+            metadata={"link_count": link_count},
+        )
+
+    _run_ping_jobs_parallel(
+        session=session,
+        topology_id=topology.id,  # type: ignore[arg-type]
+        ping_jobs=ping_jobs,
+        slots=slots,
+        settings=settings,
+    )
+
+    results = [slots[i] for i in range(len(slots))]
+    duration_ms = int((time.perf_counter() - started) * 1000)
+
+    overall_status = (
+        "FAILED"
+        if any(result["status"] == "FAILED" for result in results)
+        else "PASSED"
+    )
+
+    payload = _validation_response_with_metrics(
+        topology.id,
+        overall_status,
+        results,
+        validation_duration_ms=duration_ms,
+    )
+
+    if emit_validation_events:
+        metrics = payload.get("metrics") or {}
+        emit_event(
+            session=session,
+            topology_id=topology.id,  # type: ignore[arg-type]
+            event_type="VALIDATION_COMPLETE",
+            status="SUCCESS" if overall_status == "PASSED" else "FAILED",
+            message=f"Topology validation complete ({metrics.get('tests_passed')}/{metrics.get('tests_total')} passed)",
+            metadata={
+                "tests_passed": metrics.get("tests_passed"),
+                "tests_failed": metrics.get("tests_failed"),
+                "duration_ms": duration_ms,
+            },
+        )
+        emit_event(
+            session=session,
+            topology_id=topology.id,  # type: ignore[arg-type]
+            event_type="VALIDATION",
+            status="SUCCESS" if overall_status == "PASSED" else "FAILED",
+            message=f"Topology validation {overall_status}",
+            metadata={"results": payload["results"]},
+        )
+
+    return payload
+
+
+def _run_ping_jobs_parallel(
+    session: Session,
+    topology_id: int,
+    ping_jobs: list[tuple[int, str, str]],
+    slots: list[dict[str, Any] | None],
+    settings: ValidationConcurrencySettings,
+) -> None:
+    if not ping_jobs:
+        return
+
+    timeout_sec = settings.validation_timeout_seconds
+    max_workers = min(settings.max_parallel_validations, len(ping_jobs))
+    bind = session.get_bind()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: list[tuple[int, str, str, Any]] = []
+        for idx, src, tgt in ping_jobs:
+            fut = executor.submit(
+                _ping_validate_compute,
+                topology_id,
+                src,
+                tgt,
+                bind,
+            )
+            futures.append((idx, src, tgt, fut))
+
+        for idx, src, tgt, fut in futures:
+            try:
+                status, output, out_src, out_tgt = fut.result(timeout=timeout_sec)
+            except FuturesTimeoutError:
+                logger.warning(
+                    "validation timed out topology_id=%s %s -> %s",
+                    topology_id,
+                    src,
+                    tgt,
+                )
+                status, output = "FAILED", "validation timed out"
+                out_src, out_tgt = src, tgt
+            _record_connectivity_result(
+                session,
+                topology_id,
+                out_src,
+                out_tgt,
+                status,
+                output,
+            )
+            slots[idx] = _result_dict_for_status(out_src, out_tgt, status, output)
 
 
 def _validation_response_with_metrics(
     topology_id: int | None,
     overall_status: str,
     results: list[dict[str, Any]],
+    *,
+    validation_duration_ms: int | None = None,
 ) -> dict[str, Any]:
     counted = [r for r in results if r.get("status") != "SKIPPED"]
     tests_total = len(counted)
@@ -215,12 +456,17 @@ def _validation_response_with_metrics(
         "avg_latency_ms": mean_latency_ms(reply_latencies_ms),
         "p95_latency_ms": p95_latency_ms(reply_latencies_ms),
     }
-    return {
+    if validation_duration_ms is not None:
+        metrics["validation_duration_ms"] = validation_duration_ms
+    out: dict[str, Any] = {
         "topology_id": topology_id,
         "status": overall_status,
         "results": results,
         "metrics": metrics,
     }
+    if validation_duration_ms is not None:
+        out["duration_ms"] = validation_duration_ms
+    return out
 
 
 def _host_node_by_name(topology: Topology, name: str) -> Node | None:
