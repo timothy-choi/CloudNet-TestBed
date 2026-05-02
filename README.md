@@ -8,6 +8,118 @@ CloudNet lets you run reliability experiments on cloud infrastructure using simp
 
 ---
 
+## 1-Minute Demo
+
+Run the mock experiment locally with no cloud credentials:
+
+```bash
+git clone https://github.com/timothy-choi/CloudNet-TestBed.git
+cd CloudNet-TestBed
+make install
+```
+
+Terminal 1:
+
+```bash
+CLOUDNET_PROVIDER=mock make dev
+```
+
+Terminal 2:
+
+```bash
+make demo-mock
+```
+
+Expected proof points:
+
+```text
+✔ validate PASSED
+✖ backend failure injected
+✔ drift detected
+✔ reconcile repaired system
+✔ validate PASSED
+```
+
+The demo uses the mock provider, so it exercises the control plane and scenario lifecycle without creating cloud resources.
+
+---
+
+## Expected Output
+
+The demo prints JSON for each API step, then a lifecycle line and final summary. The important shape should look like:
+
+```text
+CloudNet mock reliability experiment
+==> Checking API
+==> Creating topology
+==> Planning
+==> Deploying
+==> Validating baseline connectivity
+==> Injecting backend node-down
+==> Validating drifted connectivity
+==> Detecting drift
+==> Reconciling
+==> Validating after reconcile
+==> Event timeline
+
+Timeline: PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONCILE -> VALIDATE(PASS)
+
+==> Demo summary
+Experiment: mock failure and recovery
+Topology ID: 1
+Baseline validation: PASSED
+After node-down: FAILED
+Drift detected: true
+Reconcile: RECONCILED
+After reconcile: PASSED
+```
+
+Terminal view:
+
+```text
+$ make demo-mock
+CloudNet mock reliability experiment
+...
+✔ validate PASSED
+✖ backend failure injected
+✔ drift detected
+✔ reconcile repaired system
+✔ validate PASSED
+```
+
+---
+
+## What Happens Internally
+
+CloudNet:
+
+1. Compiles the YAML topology into a provider-shaped plan.
+2. Deploys infrastructure through the selected provider.
+3. Validates connectivity between declared nodes.
+4. Injects a failure, such as stopping the backend node.
+5. Detects drift between desired state and provider state.
+6. Reconciles the system and validates recovery.
+
+---
+
+## Why this is interesting
+
+- Models control plane behavior instead of only checking static config.
+- Simulates failure scenarios with repeatable scenario files.
+- Validates that the system recovers, not just that resources exist.
+- Runs locally with the mock provider and can run against real AWS infrastructure.
+
+---
+
+## Limitations
+
+- CloudNet is not a production orchestrator.
+- Failure types are intentionally limited.
+- The networking model is simplified and does not cover arbitrary cloud graphs.
+- AWS is the primary real-infrastructure provider; OpenStack and Proxmox paths are experimental/legacy.
+
+---
+
 ## What problem does CloudNet solve?
 
 CloudNet gives you one repeatable workflow to:
@@ -58,10 +170,10 @@ CloudNet scenarios are intentionally small. A failure/recovery experiment reads 
 scenario:
   name: backend_failure_test
 steps:
-  - validate
+  - validate: all
   - fail:
       node: backend
-  - reconcile
+  - reconcile: true
 ```
 
 Full runnable examples include the topology and provider-safe defaults, for example **`examples/backend-failure.yaml`**.
@@ -70,9 +182,9 @@ Example output:
 
 ```text
 ✔ validate PASSED
-✖ fail backend injected
+✖ backend failure injected
 ✔ drift detected
-✔ reconcile repaired
+✔ reconcile repaired system
 ✔ validate PASSED
 ```
 
