@@ -49,6 +49,12 @@ jobs:
           CLOUDNET_API_BASE_URL: http://127.0.0.1:8010
         run: make demo-mock
 
+      - name: Run scenario demo
+        env:
+          CLOUDNET_PROVIDER: mock
+          CLOUDNET_API_BASE_URL: http://127.0.0.1:8010
+        run: make demo-scenario
+
       - name: Stop mock API
         if: always()
         run: |

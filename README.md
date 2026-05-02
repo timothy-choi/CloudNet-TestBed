@@ -335,7 +335,7 @@ export PATH="$PWD/scripts:$PATH"
 cloudnet run examples/backend-failure.yaml
 ```
 
-The step fails if the CLI exits non-zero (**scenario `FAILED`**, HTTP error, or API never became ready). The main **`CI`** workflow (**`.github/workflows/ci.yml`**) still runs **`make ci`** (lint + unit tests) and a mock control-plane demo; the **CloudNet scenario** workflow focuses on **`examples/backend-failure.yaml`** as an end-to-end reliability check.
+The step fails if the CLI exits non-zero (**scenario `FAILED`**, HTTP error, or API never became ready). Scenarios are tested in CI to guarantee behavior: golden scenario contracts assert step sequence, expected pass/fail outcomes, requirement evaluation, CLI exit codes, and final scenario status. The main **`CI`** workflow (**`.github/workflows/ci.yml`**) runs **`make ci`**, **`make demo-mock`**, and **`make demo-scenario`**; the **CloudNet scenario** workflow focuses on **`examples/backend-failure.yaml`** as an end-to-end reliability check.
 
 Locally, after **`CLOUDNET_PROVIDER=mock make dev`**, run **`make scenario-test`** to execute that scenario against **`CLOUDNET_API_BASE_URL`** (default **`http://127.0.0.1:8010`**). Related targets: **`make ci`** (lint + unit tests), **`make demo-scenario`** (same YAML with a short banner via **`scripts/demo_scenario.sh`**).
 
