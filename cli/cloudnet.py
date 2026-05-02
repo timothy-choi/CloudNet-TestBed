@@ -182,6 +182,31 @@ def load_scenario_yaml(path: Path) -> dict:
     return data
 
 
+def _print_scenario_plan(path: Path) -> int:
+    """Dry-run: topology compile + scenario steps (no HTTP, no cloud APIs)."""
+    from pydantic import ValidationError
+
+    from app.services.scenario_plan import describe_scenario_plan
+    from app.services.scenario_service import ScenarioError
+
+    body = load_scenario_yaml(path)
+    try:
+        lines = describe_scenario_plan(body)
+    except ValidationError as exc:
+        print(f"invalid scenario: {exc}", file=sys.stderr)
+        return 1
+    except ScenarioError as exc:
+        print(f"invalid scenario: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"invalid scenario: {exc}", file=sys.stderr)
+        return 1
+    print("Plan:")
+    for line in lines:
+        print(f"- {line}")
+    return 0
+
+
 def _fmt_total_time_ms(duration_ms: int) -> str:
     if duration_ms >= 1000:
         return f"{duration_ms / 1000.0:.1f}s"
@@ -287,8 +312,16 @@ def _print_scenario_report(body: dict) -> None:
     print(f"Total time: {_fmt_total_time_ms(total_ms)}")
 
 
+def cmd_plan(client: httpx.Client, args: argparse.Namespace) -> int:
+    """Print a dry-run plan for a scenario file."""
+    del client
+    return _print_scenario_plan(Path(args.file))
+
+
 def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
     path = Path(args.file)
+    if getattr(args, "plan_only", False):
+        return _print_scenario_plan(path)
     body = load_scenario_yaml(path)
     if getattr(args, "cleanup", False):
         body["cleanup"] = True
@@ -397,7 +430,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Request deployment cleanup after the scenario run (API body cleanup: true)",
     )
+    p_run.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Print dry-run plan only (no API calls); same as cloudnet plan",
+    )
     p_run.set_defaults(func=cmd_run)
+
+    p_plan = sub.add_parser(
+        "plan",
+        help="Dry-run scenario: show VPC/subnet/instance counts and step summary (no execution)",
+    )
+    p_plan.add_argument("file", help="Scenario YAML (scenario, topology, steps)")
+    p_plan.set_defaults(func=cmd_plan)
 
     p_validate_topo = sub.add_parser(
         "validate-topology",

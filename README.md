@@ -66,6 +66,19 @@ Templates live under **`templates/`**. The CLI copies the chosen file to a tempo
 | **`simple-connectivity`** | Two hosts, one link; deploy and validate only. |
 | **`latency-test`** | Two hosts; deploy, validate, plus relaxed **availability** / **latency** requirements for NFR checks. |
 
+### Plan vs run (dry-run)
+
+**Plan** shows what a scenario would provision and which steps it would run, using the same topology compiler and scenario step parser as the real engine. It does **not** call the HTTP API or any cloud provider.
+
+```bash
+./scripts/cloudnet plan examples/backend-failure.yaml
+./scripts/cloudnet run examples/backend-failure.yaml --plan-only   # same output as plan
+```
+
+Use **plan** / **`--plan-only`** to review VPC/subnet/instance counts (lab model: **1 VPC**, one subnet per link, one instance per **`host`** node) and a short summary of validate / failure / drift / reconcile / cleanup steps before you start the API or spend quota.
+
+**Run** (**`cloudnet run`**) executes the experiment: **`POST /scenarios/run`**, deploys through the configured provider, and returns pass/fail results.
+
 ---
 
 ## Expected Output
