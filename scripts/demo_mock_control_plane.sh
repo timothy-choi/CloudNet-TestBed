@@ -48,7 +48,7 @@ expect_status() {
 require_command curl
 require_command jq
 
-echo "CloudNet mock control plane demo"
+echo "CloudNet mock reliability experiment"
 echo "API: ${API_BASE_URL}"
 echo "Topology: ${TOPOLOGY_NAME}"
 
@@ -164,6 +164,7 @@ echo "Timeline: ${timeline}"
 
 step "Demo summary"
 cat <<SUMMARY
+Experiment: mock failure and recovery
 Topology ID: ${topology_id}
 Baseline validation: PASSED
 After node-down: FAILED

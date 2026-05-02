@@ -41,7 +41,8 @@ demo-mock:
 demo-scenario:
 	./scripts/demo_scenario.sh
 
-# Requires API already running (e.g. CLOUDNET_PROVIDER=mock make dev). Exit 0 = scenario PASSED.
+# Requires API already running. First workflow: CLOUDNET_PROVIDER=mock make dev, then make demo-mock.
+# Exit 0 = scenario PASSED.
 scenario-test:
 	./scripts/cloudnet run examples/backend-failure.yaml
 

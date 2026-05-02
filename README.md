@@ -1,62 +1,75 @@
-# CloudNet — Reliability Testing Platform for Cloud Topologies
+# CloudNet — Reliability Experiment Runner for Cloud Network Topologies
 
-CloudNet runs **failure scenarios** on cloud infrastructure and **verifies recovery**: deploy, validate connectivity, inject faults, detect drift, reconcile, and emit a clear pass/fail report.
+CloudNet is **a reliability experiment runner for cloud network topologies**. It turns a declarative network topology into an experiment: deploy, validate connectivity, inject failure, detect drift, reconcile recovery, and return a clear pass/fail result.
 
-**First command** (with the API running — see Quick Start):
-
-```bash
-./scripts/cloudnet run examples/backend-failure.yaml
-```
-
-Use **`./scripts/cloudnet`** from the project root, or add `scripts/` to your `PATH` and run **`cloudnet`**. Exit code **0** = scenario **PASSED**, **1** = **FAILED** or HTTP error. Use **`cloudnet run --json`** for the raw API response.
+**Primary providers:** **Mock** for local and CI-safe runs, and **AWS** for real VPC/EC2 experiments when credentials and cost controls are configured.
 
 **Languages:** Python (FastAPI, topology compiler, providers), Bash (demos).
+
+---
+
+## What problem does CloudNet solve?
+
+CloudNet gives you one repeatable workflow to:
+
+- **Define a cloud topology** with hosts, links, subnets, and firewall rules.
+- **Run a failure experiment** against that topology.
+- **Validate connectivity** before, during, and after the failure.
+- **Detect drift** between desired topology and provider state.
+- **Reconcile recovery** where the provider supports repair.
+
+---
+
+## Quick Start
+
+Start the API with the **mock** provider:
+
+```bash
+CLOUDNET_PROVIDER=mock make dev
+```
+
+In another terminal, run the first experiment workflow:
+
+```bash
+make demo-mock
+```
+
+The mock demo exercises the control plane without cloud credentials or billable resources:
+
+```text
+PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONCILE -> VALIDATE(PASS)
+```
+
+If dependencies are not installed yet, run **`make install`** first.
 
 ---
 
 ## Why use CloudNet?
 
 - **Test failure recovery** without manually wiring VPCs, subnets, security groups, and instances for every experiment.
-- **Validate cloud network connectivity** from declarative topology definitions (nodes, links, firewall rules).
-- **Reproduce reliability experiments locally** with mock mode—no cloud credentials or billable resources.
-- **Run the same experiment** against real AWS infrastructure when you are ready, using the same scenario engine.
+- **Validate cloud network connectivity** from declarative topology definitions.
+- **Reproduce reliability experiments locally** with mock mode before using real cloud resources.
+- **Run the same experiment model** against AWS when you are ready for production-like infrastructure.
 
 ---
 
-## Quick Start
+## Run an experiment
 
-**1. Install and start the API** with the **mock** provider (no AWS credentials):
-
-```bash
-pip install -r backend/requirements.txt
-CLOUDNET_PROVIDER=mock make dev
-```
-
-**2. Run a scenario** in another terminal:
+Use **`make demo-mock`** for the guided local walkthrough. Use the CLI when you want to run a tracked scenario file:
 
 ```bash
 ./scripts/cloudnet run examples/backend-failure.yaml
 ```
 
-For a shorter example (deploy + validate only), use **`examples/simple-connectivity.yaml`**.
+For a shorter deploy-and-validate example:
 
-**Optional:** **`make demo-scenario`** runs the backend-failure YAML with a short banner. **`CLOUDNET_PROVIDER=mock make demo-mock`** is an interactive walkthrough of the same reliability narrative.
-
-That narrative is:
-
-```text
-PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
+```bash
+./scripts/cloudnet run examples/simple-connectivity.yaml
 ```
 
----
+Use **`./scripts/cloudnet`** from the project root, or add `scripts/` to your `PATH` and run **`cloudnet`**. Exit code **0** means the scenario **PASSED**; exit code **1** means **FAILED** or an HTTP error. Use **`./scripts/cloudnet run --json`** for the raw API response.
 
-## What users do with it
-
-- **Define a topology** — nodes, links, and optional firewall rules; optionally describe **scenario** steps (deploy, validate, fail a node, drift checks, reconcile, cleanup).
-- **Run an experiment** — **`POST /scenarios/run`** or **`./scripts/cloudnet run`** while the API is up.
-- **Review pass/fail reports** — per-step expectations, outcomes, and durations.
-- **Inspect drift and events** — topology timeline at **`GET /topologies/{id}/events`**; drift via API or scenario steps.
-- **Use AWS mode** for real VPCs and instances when you want production-like infrastructure under test.
+Scenario runs persist structured step results and emit **`SCENARIO_RUN`** and related events on the topology timeline.
 
 ---
 
@@ -66,27 +79,6 @@ PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → 
 - **Not an AWS console wrapper** — it exposes a focused API and CLI for lab-style networks and experiments.
 - **Not a production orchestrator** — it does not replace Kubernetes, CI platforms, or fleet managers for running services at scale.
 - **It is a reliability testbed** — a control plane for defining intent, provisioning lab infrastructure, injecting faults, observing drift, reconciling where supported, and recording outcomes.
-
----
-
-## Experiment lifecycle
-
-Whether you use **`make demo-mock`** or a **scenario YAML**, the narrative is the same pipeline:
-
-```text
-PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
-```
-
-- **Plan** — compile intent into a provider-shaped plan (no cloud resources yet).
-- **Deploy** — create subnets, instances, and rules from that plan.
-- **Validate** — check connectivity (for example ICMP along links / rules).
-- **Failure** — stop an instance or equivalent to simulate outage.
-- **Validate** — assert behavior under failure (for example connectivity fails where expected).
-- **Drift** — compare desired topology to actual provider state.
-- **Reconcile** — repair supported drift (for example start stopped instances).
-- **Validate** — confirm recovery.
-
-The mock demo prints a compact timeline; scenario runs persist structured step results and emit **`SCENARIO_RUN`** (and related) events on the topology timeline.
 
 ---
 
@@ -221,7 +213,7 @@ Under the hood, CloudNet keeps **desired state** (stored topology) separate from
                             ▼            ▼               ▼
                     ┌──────────────┐  ┌─────────────────────────┐
                     │ Deployment   │  │ Provider adapter        │
-                    │ resources DB │  │ AWS · Mock · OpenStack… │
+                    │ resources DB │  │ Mock · AWS · legacy      │
                     └──────────────┘  └───────────┬─────────────┘
                                                   │
                                                   ▼
@@ -232,7 +224,24 @@ Under the hood, CloudNet keeps **desired state** (stored topology) separate from
 
 ## Advanced usage
 
-Use these when you need **raw HTTP**, **topology-only workflows**, **scenario file details**, or **implementation reference**—the same endpoints power **`cloudnet run`** under the hood.
+Use these when you need **raw HTTP**, **topology-only workflows**, **scenario file details**, or **implementation reference**—the same endpoints power **`make demo-mock`** and **`cloudnet run`** under the hood.
+
+### Experiment lifecycle
+
+Whether you use **`make demo-mock`** or a **scenario YAML**, the reliability narrative is the same pipeline:
+
+```text
+PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONCILE -> VALIDATE(PASS)
+```
+
+- **Plan** — compile intent into a provider-shaped plan without creating cloud resources.
+- **Deploy** — create subnets, instances, and rules from that plan.
+- **Validate** — check connectivity, for example ICMP along links and rules.
+- **Failure** — stop an instance or equivalent to simulate an outage.
+- **Validate** — assert expected behavior under failure.
+- **Drift** — compare desired topology to actual provider state.
+- **Reconcile** — repair supported drift, for example restarting stopped instances.
+- **Validate** — confirm recovery.
 
 ### Scenario file format (YAML)
 
@@ -463,10 +472,10 @@ Drift item `resource_type` depends on the provider (for example `aws_instance` o
 }
 ```
 
-**Experiment lifecycle** (same ordering as **Quick Start: Run an experiment** above); the mock demo prints a compact line such as:
+**Experiment lifecycle** (same ordering as **Advanced usage: Experiment lifecycle** above); the mock demo prints a compact line such as:
 
 ```text
-PLAN → DEPLOY → VALIDATE(PASS) → FAILURE → VALIDATE(FAIL) → DRIFT → RECONCILE → VALIDATE(PASS)
+PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONCILE -> VALIDATE(PASS)
 ```
 
 ---
@@ -506,12 +515,19 @@ Use this before enabling real deployments:
 
 Select infrastructure with `CLOUDNET_PROVIDER`:
 
+### Primary providers
+
 | Value | Notes |
 |-------|--------|
-| `mock` | Full control-plane path without cloud calls; used in CI. |
-| `aws` | Real VPC, subnets, security groups, EC2 (when allowed). |
-| `openstack` | Nova/Neutron-oriented naming in API responses. |
-| `proxmox` | Health/list oriented; VM creation not implemented yet. |
+| `mock` | Full control-plane path without cloud calls; recommended for local demos and CI. |
+| `aws` | Real VPC, subnets, security groups, and EC2 when credentials and cost controls are configured. |
+
+### Experimental/legacy providers
+
+| Value | Notes |
+|-------|--------|
+| `openstack` | Legacy Nova/Neutron-oriented path retained for compatibility. |
+| `proxmox` | Experimental health/list support; VM creation is not implemented yet. |
 
 If `CLOUDNET_PROVIDER` is unset, CloudNet defaults to OpenStack when `OPENSTACK_ENABLED=true`; otherwise **mock**.
 
@@ -521,7 +537,7 @@ Copy `.env.example` to `.env` for local overrides. The example file defaults to 
 
 ## Run locally (quick reference)
 
-For **`CLOUDNET_PROVIDER=mock make demo-mock`** and **`./scripts/cloudnet run examples/backend-failure.yaml`**, see **Quick Start: Run an experiment** above. The commands below are for developers running the API, docs, and tests.
+For **`CLOUDNET_PROVIDER=mock make dev`** followed by **`make demo-mock`**, see **Quick Start** above. The commands below are for developers running the API, docs, and tests.
 
 Install dependencies:
 
@@ -588,7 +604,7 @@ curl http://localhost:8010/provider/health
 
 ---
 
-## OpenStack & Proxmox
+## Experimental/legacy providers
 
 Copy `.env.example` to `.env` for OpenStack credentials. Set `OPENSTACK_ENABLED=true` when you want connection sanity checks.
 
@@ -691,7 +707,7 @@ make free-port
 make run-port PORT=8020
 ```
 
-Failure-recovery script (OpenStack-oriented naming):
+Failure-recovery script (legacy provider resource naming):
 
 ```bash
 make check-api

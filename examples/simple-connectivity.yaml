@@ -1,5 +1,8 @@
-# Minimal scenario: deploy two hosts on one link and verify ICMP connectivity (add firewall rules if needed).
-# Run: ./scripts/cloudnet run examples/simple-connectivity.yaml
+# Minimal scenario: deploy two hosts on one link and verify ICMP connectivity.
+# Start the mock API first:
+#   CLOUDNET_PROVIDER=mock make dev
+# Run:
+#   ./scripts/cloudnet run examples/simple-connectivity.yaml
 
 scenario:
   name: simple_connectivity_test
