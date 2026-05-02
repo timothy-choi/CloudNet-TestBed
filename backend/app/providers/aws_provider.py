@@ -1,9 +1,12 @@
+import logging
 import os
 import time
 from typing import Any, NoReturn
 
 from app.core.config import AWSSettings, get_aws_settings
 from app.providers.base import BaseProvider
+
+logger = logging.getLogger(__name__)
 
 
 class AWSProvider(BaseProvider):
@@ -101,6 +104,59 @@ class AWSProvider(BaseProvider):
         )
         return networks
 
+    def _find_cloudnet_vpc_id(self, ec2: Any, name: str) -> str | None:
+        resp = ec2.describe_vpcs(
+            Filters=[
+                {"Name": "tag:Name", "Values": [name]},
+                {"Name": "tag:Project", "Values": ["CloudNet"]},
+            ]
+        )
+        vpcs = resp.get("Vpcs") or []
+        return str(vpcs[0]["VpcId"]) if vpcs else None
+
+    def _find_cloudnet_subnet_id(
+        self, ec2: Any, vpc_id: str, name: str
+    ) -> str | None:
+        resp = ec2.describe_subnets(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {"Name": "tag:Name", "Values": [name]},
+                {"Name": "tag:Project", "Values": ["CloudNet"]},
+            ]
+        )
+        subs = resp.get("Subnets") or []
+        return str(subs[0]["SubnetId"]) if subs else None
+
+    def _find_cloudnet_instance(
+        self,
+        ec2: Any,
+        vpc_id: str,
+        subnet_id: str,
+        name: str,
+    ) -> dict[str, Any] | None:
+        resp = ec2.describe_instances(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {"Name": "subnet-id", "Values": [subnet_id]},
+                {"Name": "tag:Name", "Values": [name]},
+                {"Name": "tag:Project", "Values": ["CloudNet"]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": [
+                        "pending",
+                        "running",
+                        "stopped",
+                        "stopping",
+                        "shutting-down",
+                    ],
+                },
+            ]
+        )
+        for res in resp.get("Reservations") or []:
+            for inst in res.get("Instances") or []:
+                return inst
+        return None
+
     def create_network(
         self,
         name: str,
@@ -109,6 +165,20 @@ class AWSProvider(BaseProvider):
         settings = self._validated_settings(require_default_ami=False)
         ec2 = self._client("ec2", settings)
         vpc_cidr = cidr or "10.0.0.0/16"
+        existing_id = self._find_cloudnet_vpc_id(ec2, name)
+        if existing_id:
+            logger.info(
+                "resource already exists, skipping: vpc Name=%s id=%s",
+                name,
+                existing_id,
+            )
+            vpc = ec2.describe_vpcs(VpcIds=[existing_id])["Vpcs"][0]
+            return {
+                "id": existing_id,
+                "name": name,
+                "cidr": vpc.get("CidrBlock") or vpc_cidr,
+                "state": vpc.get("State", "available"),
+            }
         try:
             vpc = ec2.create_vpc(CidrBlock=vpc_cidr)["Vpc"]
             vpc_id = vpc["VpcId"]
@@ -137,6 +207,45 @@ class AWSProvider(BaseProvider):
     ) -> dict[str, Any]:
         settings = self._validated_settings(require_default_ami=False)
         ec2 = self._client("ec2", settings)
+        existing_sid = self._find_cloudnet_subnet_id(ec2, network_id, name)
+        if existing_sid:
+            logger.info(
+                "resource already exists, skipping: subnet Name=%s id=%s",
+                name,
+                existing_sid,
+            )
+            subnet_row = ec2.describe_subnets(SubnetIds=[existing_sid])["Subnets"][0]
+            vpc_nid = str(subnet_row["VpcId"])
+            internet_gateways = ec2.describe_internet_gateways(
+                Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_nid]}]
+            ).get("InternetGateways", [])
+            internet_gateway_id = (
+                str(internet_gateways[0]["InternetGatewayId"])
+                if internet_gateways
+                else ""
+            )
+            rt_tables = ec2.describe_route_tables(
+                Filters=[{"Name": "association.subnet-id", "Values": [existing_sid]}]
+            ).get("RouteTables", [])
+            route_table_id = ""
+            route_table_association_id = ""
+            if rt_tables:
+                route_table_id = str(rt_tables[0].get("RouteTableId", ""))
+                for assoc in rt_tables[0].get("Associations") or []:
+                    if assoc.get("SubnetId") == existing_sid:
+                        a = assoc.get("RouteTableAssociationId")
+                        if a:
+                            route_table_association_id = str(a)
+                        break
+            return {
+                "id": existing_sid,
+                "name": name,
+                "cidr": cidr,
+                "vpc_id": vpc_nid,
+                "internet_gateway_id": internet_gateway_id,
+                "route_table_id": route_table_id,
+                "route_table_association_id": route_table_association_id,
+            }
         try:
             subnet = ec2.create_subnet(VpcId=network_id, CidrBlock=cidr)["Subnet"]
             subnet_id = subnet["SubnetId"]
@@ -219,6 +328,40 @@ class AWSProvider(BaseProvider):
             target_subnet_id = subnet_id or self._first_subnet_id(ec2, network_id)
             subnet = ec2.describe_subnets(SubnetIds=[target_subnet_id])["Subnets"][0]
             vpc_id = subnet["VpcId"]
+            reuse = self._find_cloudnet_instance(
+                ec2, str(vpc_id), target_subnet_id, name
+            )
+            if reuse:
+                logger.info(
+                    "resource already exists, skipping: instance Name=%s id=%s",
+                    name,
+                    reuse.get("InstanceId"),
+                )
+                instance_id = str(reuse["InstanceId"])
+                ec2.get_waiter("instance_exists").wait(InstanceIds=[instance_id])
+                instance = self._describe_instance_with_retry(
+                    ec2=ec2,
+                    instance_id=instance_id,
+                )
+                security_group_id = ""
+                for nic in instance.get("NetworkInterfaces") or []:
+                    for g in nic.get("Groups") or []:
+                        security_group_id = str(g.get("GroupId") or "")
+                        break
+                    if security_group_id:
+                        break
+                public_ip = instance.get("PublicIpAddress") or self._wait_for_public_ip(
+                    ec2=ec2,
+                    instance_id=instance_id,
+                )
+                return {
+                    "id": instance.get("InstanceId"),
+                    "name": name,
+                    "status": instance.get("State", {}).get("Name"),
+                    "private_ip": instance.get("PrivateIpAddress"),
+                    "public_ip": public_ip,
+                    "security_group_id": security_group_id,
+                }
             security_group_id = self._get_or_create_security_group(
                 ec2=ec2,
                 vpc_id=vpc_id,

@@ -17,7 +17,11 @@ from app.services import failure_service
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Generator[TestClient, None, None]:
+def client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[TestClient, None, None]:
+    monkeypatch.setenv("CLOUDNET_STATE_FILE", str(tmp_path / "cloudnet-state.json"))
     database_url = f"sqlite:///{tmp_path / 'scenario.db'}"
     engine = create_engine(
         database_url,
@@ -154,7 +158,7 @@ def test_scenario_run_backend_failure_flow(client: TestClient, monkeypatch) -> N
 
 
 def test_scenario_implicit_deploy_when_no_deploy_step(client: TestClient, monkeypatch) -> None:
-    """Backward compatible: no deploy step → deploy once before steps."""
+    """Implicit deploy runs once before steps and records a deploy step."""
     mock_stack(monkeypatch)
 
     response = client.post(
@@ -177,8 +181,10 @@ def test_scenario_implicit_deploy_when_no_deploy_step(client: TestClient, monkey
     )
     assert response.status_code == 200
     steps = response.json()["steps"]
-    assert len(steps) == 1
-    assert steps[0]["action"] == "validate"
+    assert len(steps) == 2
+    assert steps[0]["action"] == "deploy"
+    assert steps[0]["actual"] == "ACTIVE"
+    assert steps[1]["action"] == "validate"
 
 
 def test_scenario_get_results_round_trip(client: TestClient, monkeypatch) -> None:
@@ -208,8 +214,9 @@ def test_scenario_get_results_round_trip(client: TestClient, monkeypatch) -> Non
     assert fetched["scenario_run_id"] == rid
     assert fetched["event_timeline_url"] == f"/topologies/{tid}/events"
     assert fetched["scenario"] == "roundtrip"
-    assert len(fetched["steps"]) == 1
-    assert fetched["steps"][0]["action"] == "validate"
+    assert len(fetched["steps"]) == 2
+    assert fetched["steps"][0]["action"] == "deploy"
+    assert fetched["steps"][1]["action"] == "validate"
 
 
 def test_scenario_run_accepts_yaml_body(client: TestClient, monkeypatch) -> None:
@@ -286,7 +293,7 @@ def test_scenario_fails_when_validate_expectation_mismatch(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "FAILED"
-    assert body["steps"][1]["status"] == "FAILED"
+    assert body["steps"][2]["status"] == "FAILED"
 
 
 def test_simple_connectivity_example_passes(client: TestClient, monkeypatch) -> None:

@@ -18,7 +18,8 @@ from app.services.event_service import emit_event
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Generator[TestClient, None, None]:
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    monkeypatch.setenv("CLOUDNET_STATE_FILE", str(tmp_path / "cloudnet-state.json"))
     database_url = f"sqlite:///{tmp_path / 'test.db'}"
     engine = create_engine(
         database_url,
@@ -151,6 +152,52 @@ def test_deploy_creates_network_and_subnet(client: TestClient, monkeypatch) -> N
         ("server", {"name": "client-a", "network_id": "net-1"}),
         ("server", {"name": "client-b", "network_id": "net-1"}),
     ]
+
+
+def test_deploy_second_time_is_idempotent(client: TestClient, monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    provider = mock_deployment_provider(monkeypatch)
+
+    def create_network(name: str, cidr: str | None = None) -> dict[str, str]:
+        calls.append(("network", {"name": name}))
+        return {"id": "net-1", "name": name, "status": "ACTIVE"}
+
+    def create_subnet(network_id: str, name: str, cidr: str) -> dict[str, str]:
+        calls.append(("subnet", {"network_id": network_id, "name": name, "cidr": cidr}))
+        return {
+            "id": "subnet-1",
+            "name": name,
+            "cidr": cidr,
+            "network_id": network_id,
+        }
+
+    def create_server(name: str, network_id: str) -> dict[str, Any]:
+        calls.append(("server", {"name": name, "network_id": network_id}))
+        return {
+            "id": f"server-{name}",
+            "name": name,
+            "status": "ACTIVE",
+            "addresses": {},
+        }
+
+    monkeypatch.setattr(provider, "create_network", create_network)
+    monkeypatch.setattr(provider, "create_subnet", create_subnet)
+    monkeypatch.setattr(provider, "create_server", create_server)
+
+    topology_id = create_topology(client)
+    calls.clear()
+    assert client.post(f"/topologies/{topology_id}/deploy").status_code == 200
+    first_calls = list(calls)
+    assert len(first_calls) == 4
+
+    calls.clear()
+    response = client.post(f"/topologies/{topology_id}/deploy")
+    assert response.status_code == 200
+    assert calls == []
+    body = response.json()
+    assert body.get("idempotent") is True
+    assert len(body.get("skipped") or []) == 4
+    assert all("resource_name" in s for s in body["skipped"])
 
 
 def test_topology_status_becomes_active_on_success(
@@ -296,47 +343,6 @@ def test_resources_endpoint_returns_saved_resources(
             "provider_resource_id": "server-client-b",
         },
     ]
-
-
-def test_deploy_refuses_existing_resources(client: TestClient, monkeypatch) -> None:
-    provider = mock_deployment_provider(monkeypatch)
-    monkeypatch.setattr(
-        provider,
-        "create_network",
-        lambda name, cidr=None: {"id": "net-1", "name": name, "status": "ACTIVE"},
-    )
-    monkeypatch.setattr(
-        provider,
-        "create_subnet",
-        lambda network_id, name, cidr: {
-            "id": "subnet-1",
-            "name": name,
-            "cidr": cidr,
-            "network_id": network_id,
-        },
-    )
-    monkeypatch.setattr(
-        provider,
-        "create_server",
-        lambda name, network_id: {
-            "id": f"server-{name}",
-            "name": name,
-            "status": "ACTIVE",
-            "addresses": {},
-        },
-    )
-
-    topology_id = create_topology(client)
-    assert client.post(f"/topologies/{topology_id}/deploy").status_code == 200
-
-    response = client.post(f"/topologies/{topology_id}/deploy")
-
-    assert response.status_code == 409
-    assert response.json() == {
-        "detail": (
-            "topology is already deployed; delete existing resources before redeploying"
-        )
-    }
 
 
 def test_deploy_skips_router_nodes(client: TestClient, monkeypatch) -> None:

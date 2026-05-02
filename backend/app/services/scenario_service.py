@@ -20,10 +20,11 @@ from app.schemas import TopologyInput
 from app.services.connectivity_service import ConnectivityTestError, validate_topology_links
 from app.services.control_plane_service import ControlPlaneError, reconcile_topology
 from app.services.deployment_service import (
-    DeploymentAlreadyExistsError,
     DeploymentError,
     cleanup_topology_deployment,
     deploy_topology,
+    topology_fingerprint,
+    topology_structure_fingerprint,
 )
 from app.services.drift_service import DriftError, detect_topology_drift
 from app.services.event_service import emit_event
@@ -140,6 +141,18 @@ def _persist_topology(session: Session, topology_input: TopologyInput) -> Topolo
         compile_topology(topology_data)
     except ValueError as exc:
         raise ScenarioError(str(exc)) from exc
+
+    fp = topology_structure_fingerprint(topology_data)
+
+    reuse_stmt = (
+        select(Topology)
+        .where(Topology.name == topology_input.name)
+        .order_by(Topology.id.desc())  # type: ignore[arg-type]
+    )
+    for candidate in session.exec(reuse_stmt).all():
+        loaded = _load_topology(session, candidate.id)
+        if topology_fingerprint(loaded) == fp:
+            return loaded
 
     topology = Topology(name=topology_input.name)
     session.add(topology)
@@ -466,11 +479,28 @@ class ScenarioRunner:
                 abort_scenario = True
             else:
                 try:
-                    deploy_topology(session, topology, scenario_run_id=scenario_run_id)
-                except DeploymentAlreadyExistsError as exc:
-                    session.delete(run)
-                    session.commit()
-                    raise ScenarioError(str(exc)) from exc
+                    dep = deploy_topology(
+                        session, topology, scenario_run_id=scenario_run_id
+                    )
+                    actual = str(dep.get("status", ""))
+                    ok = actual == "ACTIVE"
+                    msg = None
+                    if dep.get("idempotent"):
+                        msg = "idempotent deploy (skipped existing resources)"
+                    rec = _step_record(
+                        name="deploy",
+                        action="deploy",
+                        expected="ACTIVE",
+                        actual=actual,
+                        step_passed=ok,
+                        duration_ms=_elapsed_ms(t_impl),
+                        message=msg,
+                    )
+                    if dep.get("idempotent"):
+                        rec["idempotent"] = True
+                        rec["skipped"] = dep.get("skipped") or []
+                    push_step(rec)
+                    topology = _load_topology(session, topology_id)
                 except DeploymentError as exc:
                     rec = _step_record(
                         name="deploy",
@@ -486,8 +516,6 @@ class ScenarioRunner:
                     abort_scenario = True
                     if cleanup_on_failure:
                         _attempt_scenario_cleanup(session, topology)
-                else:
-                    topology = _load_topology(session, topology_id)
 
         for step in parsed:
             if abort_scenario:
@@ -513,32 +541,33 @@ class ScenarioRunner:
             t_step = time.perf_counter()
 
             if isinstance(step, _DeployStep):
+                dep: dict[str, Any] | None = None
                 try:
                     dep = deploy_topology(session, topology, scenario_run_id=scenario_run_id)
                     actual = str(dep.get("status", ""))
                     ok = actual == "ACTIVE"
                     msg = None
-                except DeploymentAlreadyExistsError as exc:
-                    actual = "FAILED"
-                    ok = False
-                    msg = str(exc)
+                    if dep.get("idempotent"):
+                        msg = "idempotent deploy (skipped existing resources)"
                 except DeploymentError as exc:
                     actual = "FAILED"
                     ok = False
                     msg = str(exc)
 
                 topology = _load_topology(session, topology.id)
-                push_step(
-                    _step_record(
-                        name="deploy",
-                        action="deploy",
-                        expected="ACTIVE",
-                        actual=actual,
-                        step_passed=ok,
-                        duration_ms=_elapsed_ms(t_step),
-                        message=msg,
-                    )
+                rec = _step_record(
+                    name="deploy",
+                    action="deploy",
+                    expected="ACTIVE",
+                    actual=actual,
+                    step_passed=ok,
+                    duration_ms=_elapsed_ms(t_step),
+                    message=msg,
                 )
+                if dep and dep.get("idempotent"):
+                    rec["idempotent"] = True
+                    rec["skipped"] = dep.get("skipped") or []
+                push_step(rec)
                 if not ok:
                     overall_ok = False
                     if cleanup_on_failure:

@@ -36,7 +36,6 @@ from app.services.control_plane_service import (
     reconcile_topology,
 )
 from app.services.deployment_service import (
-    DeploymentAlreadyExistsError,
     DeploymentError,
     deploy_topology,
     list_topology_resources,
@@ -260,24 +259,19 @@ def deploy_topology_endpoint(
                 if resource["type"] in INSTANCE_RESOURCE_TYPES
             ]
         )
+        metadata: dict[str, Any] = {"instance_count": instance_count}
+        if response.get("idempotent"):
+            metadata["idempotent"] = True
+            metadata["skipped_count"] = len(response.get("skipped") or [])
         emit_event(
             session=session,
             topology_id=topology_id,
             event_type="DEPLOY_COMPLETE",
             status="SUCCESS",
             message=f"Deployed {instance_count} instances",
-            metadata={"instance_count": instance_count},
+            metadata=metadata,
         )
         return response
-    except DeploymentAlreadyExistsError as exc:
-        emit_event(
-            session=session,
-            topology_id=topology_id,
-            event_type="DEPLOY_COMPLETE",
-            status="FAILED",
-            message=str(exc),
-        )
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DeploymentError as exc:
         emit_event(
             session=session,

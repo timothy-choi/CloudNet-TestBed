@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -95,6 +97,119 @@ def compile_deployment_plan(topology: Topology) -> dict[str, Any]:
     return compile_topology(_topology_to_input(topology))
 
 
+def topology_structure_fingerprint(data: dict[str, Any]) -> str:
+    """Stable hash of topology shape (nodes, links, firewall rules) for idempotent reuse."""
+    nodes = data.get("nodes") or []
+    links = data.get("links") or []
+    rules = data.get("firewall_rules") or []
+    canon = {
+        "nodes": sorted(
+            (str(n.get("name")), str(n.get("type")))
+            for n in nodes
+            if isinstance(n, dict)
+        ),
+        "links": sorted(
+            (str(l.get("from")), str(l.get("to")), str(l.get("subnet")))
+            for l in links
+            if isinstance(l, dict)
+        ),
+        "firewall_rules": sorted(
+            (
+                str(r.get("name")),
+                str(r.get("protocol")),
+                r.get("port"),
+                str(r.get("from")),
+                str(r.get("to")),
+            )
+            for r in rules
+            if isinstance(r, dict)
+        ),
+    }
+    payload = json.dumps(canon, sort_keys=True).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def topology_fingerprint(topology: Topology) -> str:
+    return topology_structure_fingerprint(_topology_to_input(topology))
+
+
+def _hydrate_deployment_rows_from_local_state(session: Session, topology: Topology) -> None:
+    """If SQLite has no deployment rows but ``state.json`` has an ACTIVE snapshot, insert rows."""
+    from app.services.local_state_store import resources_from_local_state
+
+    if topology.id is None:
+        return
+    handles = resources_from_local_state(topology.id)
+    if not handles:
+        return
+    for h in handles:
+        session.add(
+            DeploymentResource(
+                topology_id=topology.id,
+                resource_type=h.resource_type,
+                resource_name=h.resource_name,
+                openstack_id=h.openstack_id,
+            )
+        )
+    topology.status = "ACTIVE"
+    session.add(topology)
+    session.commit()
+    logger.info(
+        "hydrated deployment rows from state.json for topology_id=%s",
+        topology.id,
+    )
+
+
+def _finish_idempotent_deploy(
+    session: Session,
+    topology: Topology,
+    rows: list[DeploymentResource],
+    scenario_run_id: int | None,
+) -> dict[str, Any]:
+    """Refresh snapshot and return API payload without calling the provider."""
+    topology.status = "ACTIVE"
+    session.add(topology)
+    session.commit()
+    session.refresh(topology)
+
+    for r in rows:
+        logger.info(
+            "resource already exists, skipping: %s %s",
+            r.resource_type,
+            r.resource_name,
+        )
+
+    try:
+        from app.services.local_state_store import record_deploy_snapshot
+
+        record_deploy_snapshot(
+            topology_id=topology.id,
+            topology_name=topology.name,
+            scenario_run_id=scenario_run_id,
+            resources=rows,
+            status=str(topology.status),
+        )
+    except Exception:
+        logger.exception("local state snapshot (idempotent deploy) skipped")
+
+    skipped = [
+        {
+            "resource_type": r.resource_type,
+            "resource_name": r.resource_name,
+            "reason": "already_deployed",
+        }
+        for r in rows
+    ]
+    response_resources = [deployment_summary_resource(r) for r in rows]
+    return {
+        "topology_id": topology.id,
+        "status": topology.status,
+        "resources": response_resources,
+        "idempotent": True,
+        "skipped": skipped,
+    }
+
+
 def multi_homed_warnings(plan: dict[str, Any]) -> list[str]:
     host_names = {
         server["name"]
@@ -125,9 +240,13 @@ def deploy_topology(
         raise DeploymentError("topology must be saved before deployment")
 
     existing_resources = list_topology_resources(session, topology.id)
+    if not existing_resources:
+        _hydrate_deployment_rows_from_local_state(session, topology)
+        existing_resources = list_topology_resources(session, topology.id)
+
     if existing_resources:
-        raise DeploymentAlreadyExistsError(
-            "topology is already deployed; delete existing resources before redeploying"
+        return _finish_idempotent_deploy(
+            session, topology, existing_resources, scenario_run_id
         )
 
     plan = compile_deployment_plan(topology)
@@ -239,6 +358,7 @@ def deploy_topology(
                 record_deploy_failed(
                     topology_id=topology.id,
                     scenario_run_id=scenario_run_id,
+                    topology_name=topology.name,
                 )
             except Exception:
                 logger.exception("local state snapshot (failed deploy) skipped")
@@ -256,6 +376,7 @@ def deploy_topology(
 
         record_deploy_snapshot(
             topology_id=topology.id,
+            topology_name=topology.name,
             scenario_run_id=scenario_run_id,
             resources=rows,
             status=str(topology.status),

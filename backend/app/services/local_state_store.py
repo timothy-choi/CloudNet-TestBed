@@ -100,6 +100,7 @@ def _rows_to_serializable(rows: list[DeploymentResource]) -> list[dict[str, str]
 def record_deploy_snapshot(
     *,
     topology_id: int,
+    topology_name: str | None,
     scenario_run_id: int | None,
     resources: list[DeploymentResource],
     status: str,
@@ -117,6 +118,7 @@ def record_deploy_snapshot(
     key = str(topology_id)
     deps[key] = {
         "topology_id": topology_id,
+        "topology_name": topology_name or "",
         "scenario_run_id": scenario_run_id,
         "status": status,
         "provider_resource_ids": grouped,
@@ -130,19 +132,26 @@ def record_deploy_failed(
     *,
     topology_id: int,
     scenario_run_id: int | None,
+    topology_name: str | None = None,
 ) -> None:
     state = load_state()
     deps: dict[str, Any] = state.setdefault("deployments", {})
     key = str(topology_id)
     prev_sr = None
+    prev_name = topology_name
     prev = deps.get(key)
     if isinstance(prev, dict):
         p = prev.get("scenario_run_id")
         if isinstance(p, int):
             prev_sr = p
+        if prev_name is None or prev_name == "":
+            pn = prev.get("topology_name")
+            if isinstance(pn, str) and pn:
+                prev_name = pn
     sr = scenario_run_id if scenario_run_id is not None else prev_sr
     deps[key] = {
         "topology_id": topology_id,
+        "topology_name": prev_name or "",
         "scenario_run_id": sr,
         "status": "FAILED",
         "provider_resource_ids": {"vpc": [], "subnets": [], "instances": []},
@@ -163,6 +172,38 @@ def remove_local_deployment(topology_id: int) -> None:
 
 def clear_all_local_state() -> None:
     save_state({"version": STATE_VERSION, "deployments": {}})
+
+
+def find_active_deployment_by_topology_name(state: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """Return the newest deployment row with matching ``topology_name`` and ACTIVE status."""
+    deps = state.get("deployments")
+    if not isinstance(deps, dict):
+        return None
+    matches: list[tuple[int, dict[str, Any]]] = []
+    for _k, row in deps.items():
+        if not isinstance(row, dict):
+            continue
+        if row.get("topology_name") != name:
+            continue
+        if row.get("status") != "ACTIVE":
+            continue
+        tid = row.get("topology_id")
+        if isinstance(tid, int):
+            matches.append((tid, row))
+    if not matches:
+        return None
+    matches.sort(key=lambda x: x[0], reverse=True)
+    return matches[0][1]
+
+
+def deployment_has_resource_name(row: dict[str, Any], resource_name: str) -> bool:
+    resources = row.get("resources")
+    if not isinstance(resources, list):
+        return False
+    for item in resources:
+        if isinstance(item, dict) and item.get("resource_name") == resource_name:
+            return True
+    return False
 
 
 def load_local_state_on_startup() -> dict[str, Any]:

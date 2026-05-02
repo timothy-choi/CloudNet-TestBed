@@ -146,7 +146,7 @@ class FakeEC2:
     def describe_availability_zones(self):
         return {"AvailabilityZones": [{"ZoneName": "us-west-2a"}]}
 
-    def describe_vpcs(self, VpcIds=None):
+    def describe_vpcs(self, VpcIds=None, Filters=None):
         if VpcIds is not None:
             return {
                 "Vpcs": [
@@ -155,6 +155,9 @@ class FakeEC2:
                     if vpc_id in self.fake_aws.vpcs_by_id
                 ]
             }
+        # Tag-based discovery (idempotent deploy) — no pre-seeded tagged VPCs in this fake.
+        if Filters:
+            return {"Vpcs": []}
         return {
             "Vpcs": [
                 {
@@ -178,17 +181,28 @@ class FakeEC2:
                 ]
             }
         if Filters:
-            vpc_ids = []
+            vpc_ids: list[str] = []
+            name_val: str | None = None
+            project_val: str | None = None
             for item in Filters:
                 if item.get("Name") == "vpc-id":
                     vpc_ids.extend(item.get("Values", []))
-            return {
-                "Subnets": [
-                    subnet
-                    for vpc_id in vpc_ids
-                    for subnet in self.fake_aws.subnets_by_vpc.get(vpc_id, [])
-                ]
-            }
+                if item.get("Name") == "tag:Name":
+                    vals = item.get("Values") or []
+                    name_val = str(vals[0]) if vals else None
+                if item.get("Name") == "tag:Project":
+                    vals = item.get("Values") or []
+                    project_val = str(vals[0]) if vals else None
+            out: list[dict] = []
+            for vpc_id in vpc_ids:
+                for subnet in self.fake_aws.subnets_by_vpc.get(vpc_id, []):
+                    tags = {t["Key"]: t["Value"] for t in subnet.get("Tags", [])}
+                    if name_val is not None and tags.get("Name") != name_val:
+                        continue
+                    if project_val is not None and tags.get("Project") != project_val:
+                        continue
+                    out.append(subnet)
+            return {"Subnets": out}
         return {
             "Subnets": [
                 {
@@ -642,6 +656,9 @@ def test_aws_create_network_wraps_client_error(monkeypatch) -> None:
     set_aws_env(monkeypatch)
 
     class FailingEC2:
+        def describe_vpcs(self, Filters=None, VpcIds=None):
+            return {"Vpcs": []}
+
         def create_vpc(self, CidrBlock):
             raise ClientError(
                 {"Error": {"Code": "AuthFailure", "Message": "not allowed"}},

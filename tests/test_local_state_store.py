@@ -43,14 +43,15 @@ def test_record_deploy_and_remove_roundtrip(
     ]
     record_deploy_snapshot(
         topology_id=7,
+        topology_name="test-topo",
         scenario_run_id=99,
         resources=rows,  # type: ignore[arg-type]
         status="ACTIVE",
     )
-
     data = json.loads(isolated_state_file.read_text())
     dep = data["deployments"]["7"]
     assert dep["topology_id"] == 7
+    assert dep["topology_name"] == "test-topo"
     assert dep["scenario_run_id"] == 99
     assert dep["status"] == "ACTIVE"
     assert dep["provider_resource_ids"]["vpc"] == ["vpc-1"]

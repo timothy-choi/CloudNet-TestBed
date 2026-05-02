@@ -241,7 +241,24 @@ def _scenario_step_one_liner(index: int, step: dict[str, object]) -> str:
     name = str(step.get("name") or "")
 
     if action == "deploy":
-        return f"[{index}] Deploy topology {mark}"
+        parts: list[str] = [f"[{index}] Deploy topology {mark}"]
+        skipped = step.get("skipped")
+        if step.get("idempotent") and isinstance(skipped, list) and len(skipped) > 0:
+            sk = skipped
+            n = len(sk)
+            names: list[str] = []
+            for item in sk[:5]:
+                if isinstance(item, dict) and item.get("resource_name"):
+                    names.append(str(item["resource_name"]))
+                else:
+                    names.append("?")
+            suffix = ", ".join(names)
+            if n > 5:
+                suffix += f", … (+{n - 5} more)"
+            parts.append(f"— skipped {n} ({suffix})")
+        elif step.get("message"):
+            parts.append(f"— {step['message']}")
+        return " ".join(parts)
 
     if action == "validate":
         if ok:

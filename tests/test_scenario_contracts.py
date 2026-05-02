@@ -42,6 +42,7 @@ def client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[TestClient, None, None]:
+    monkeypatch.setenv("CLOUDNET_STATE_FILE", str(tmp_path / "cloudnet-state.json"))
     database_url = f"sqlite:///{tmp_path / 'scenario_contracts.db'}"
     engine = create_engine(database_url, connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(engine)

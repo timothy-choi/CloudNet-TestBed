@@ -25,8 +25,20 @@ CloudNet lets you run reliability experiments on cloud infrastructure using simp
 - **Drift detection** — compares declared topology + deployment metadata to provider inventory where supported.
 - **Reconciliation** — starts instances, restores SG rules, runs validation when the provider supports repair paths.
 - **State store** — SQLite + optional **`state.json`** snapshot for deploy artifacts and operator tooling (`CLOUDNET_STATE_FILE`).
+- **Idempotent deploy** — repeated **`POST /topologies/{id}/deploy`**, scenario runs, and **`cloudnet run`** against the same topology do not create a second set of resources: existing deployment rows (and an **`ACTIVE`** `state.json` snapshot for the same topology name) short-circuit before provider creates. On **AWS**, the provider also checks for existing resources tagged **`Project=CloudNet`** and **`Name=<resource name>`** before create. See **Idempotent deploy** below.
 - **Janitor cleanup** — **`POST /cleanup/janitor`** / **`cloudnet cleanup`** removes orphaned ACTIVE entries in **`state.json`** without matching DB rows (crash recovery).
 - **Concurrent validation** — ICMP/link checks run in parallel with caps (**`MAX_PARALLEL_VALIDATIONS`**, **`VALIDATION_TIMEOUT_SECONDS`**); API results stay in topology link order.
+
+---
+
+## Idempotent deploy
+
+CloudNet ensures **repeated runs do not create duplicate infrastructure** for the same deployed topology.
+
+- **Control plane** — Before provisioning, deploy checks SQLite **deployment** rows. If the topology already has resources recorded, the deploy path **skips** the provider and returns **`idempotent: true`** with a per-resource **`skipped`** list. Server logs include `resource already exists, skipping` for each row. If the database is empty but **`state.json`** has an **`ACTIVE`** snapshot for that **topology id** (e.g. after a partial sync), rows are **hydrated** from local state so the same skip behavior applies.
+- **Local file** — **`state.json`** (see **`CLOUDNET_STATE_FILE`**) stores a snapshot of resource names and provider ids after deploy; it is updated again on idempotent deploy so file metadata stays consistent.
+- **AWS** — Before create, the AWS provider can resolve existing **VPCs, subnets, security groups, and instances** by tags **`Project=CloudNet`** and **`Name=<resource name>`** and reuse them instead of creating new ones.
+- **CLI** — A second **`cloudnet run same-scenario.yaml`** reuses the deployment: the **deploy** step shows **skipped** resources (and **`cloudnet plan`** prints **CREATE** / **SKIP** / optional **DELETE** lines against **`state.json`** for the scenario topology name).
 
 ---
 
