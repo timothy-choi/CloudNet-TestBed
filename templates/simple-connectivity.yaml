@@ -1,0 +1,23 @@
+# Built-in template: minimal deploy + connectivity validation (two hosts, one link).
+# Prerequisites: API running, e.g. CLOUDNET_PROVIDER=mock make dev
+# CLI: ./scripts/cloudnet templates run simple-connectivity
+
+scenario:
+  name: simple_connectivity_test
+
+topology:
+  name: simple-connectivity-demo
+  nodes:
+    - name: client-a
+      type: host
+    - name: client-b
+      type: host
+  links:
+    - from: client-a
+      to: client-b
+      subnet: 10.200.1.0/24
+  firewall_rules: []
+
+steps:
+  - deploy: true
+  - validate: all

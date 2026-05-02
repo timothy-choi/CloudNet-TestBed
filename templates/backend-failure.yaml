@@ -1,0 +1,45 @@
+# Built-in template: full failure / drift / reconcile narrative (three-tier topology).
+# Prerequisites: API running, e.g. CLOUDNET_PROVIDER=mock make dev
+# CLI: ./scripts/cloudnet templates run backend-failure
+
+scenario:
+  name: backend_failure_test
+
+topology:
+  name: three-tier-app
+  nodes:
+    - name: frontend
+      type: host
+    - name: backend
+      type: host
+    - name: db
+      type: host
+  links:
+    - from: frontend
+      to: backend
+      subnet: 10.100.1.0/24
+    - from: backend
+      to: db
+      subnet: 10.100.2.0/24
+  firewall_rules:
+    - name: allow-frontend-backend-ping
+      protocol: icmp
+      from: frontend
+      to: backend
+    - name: allow-backend-db-ping
+      protocol: icmp
+      from: backend
+      to: db
+
+steps:
+  - deploy: true
+  - validate: all
+  - fail:
+      node: backend
+  - validate:
+      expect: fail
+  - drift:
+      expect: detected
+  - reconcile: true
+  - validate:
+      expect: pass

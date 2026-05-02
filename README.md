@@ -44,6 +44,30 @@ The demo uses the mock provider, so it exercises the control plane and scenario 
 
 ---
 
+## Run a built-in experiment
+
+With the API running (for example **`CLOUDNET_PROVIDER=mock make dev`** in another terminal), you can run a bundled scenario without authoring YAML:
+
+```bash
+./scripts/cloudnet templates run backend-failure
+```
+
+List available templates:
+
+```bash
+./scripts/cloudnet templates list
+```
+
+Templates live under **`templates/`**. The CLI copies the chosen file to a temporary path and invokes the same **`POST /scenarios/run`** path as **`cloudnet run`** with a scenario file. Options **`--json`** and **`--cleanup`** match **`cloudnet run`**.
+
+| Template | Purpose |
+|----------|---------|
+| **`backend-failure`** | Three-tier topology; deploy, validate, node-down, drift, reconcile, validate (same narrative as **`examples/backend-failure.yaml`**). |
+| **`simple-connectivity`** | Two hosts, one link; deploy and validate only. |
+| **`latency-test`** | Two hosts; deploy, validate, plus relaxed **availability** / **latency** requirements for NFR checks. |
+
+---
+
 ## Expected Output
 
 The demo prints JSON for each API step, then a lifecycle line and final summary. The important shape should look like:

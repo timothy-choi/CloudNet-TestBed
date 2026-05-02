@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -19,6 +21,61 @@ def api_base_url() -> str:
 
 def http_client() -> httpx.Client:
     return httpx.Client(base_url=api_base_url(), timeout=120.0)
+
+
+def templates_dir() -> Path:
+    """Directory containing built-in scenario templates (repo-root ``templates/``)."""
+    return Path(__file__).resolve().parent.parent / "templates"
+
+
+def cmd_templates_list(client: httpx.Client, args: argparse.Namespace) -> int:
+    directory = templates_dir()
+    if not directory.is_dir():
+        print(f"templates directory missing: {directory}", file=sys.stderr)
+        return 1
+    paths = sorted(directory.glob("*.yaml"))
+    if not paths:
+        print("(no templates)", file=sys.stderr)
+        return 0
+    for path in paths:
+        label = path.stem
+        try:
+            data = yaml.safe_load(path.read_text())
+            scen = data.get("scenario") if isinstance(data, dict) else None
+            name = scen.get("name") if isinstance(scen, dict) else None
+        except (OSError, yaml.YAMLError):
+            name = None
+        if name:
+            print(f"{label}\t{name}")
+        else:
+            print(label)
+    return 0
+
+
+def cmd_templates_run(client: httpx.Client, args: argparse.Namespace) -> int:
+    raw = args.template.strip()
+    if raw.endswith(".yaml"):
+        raw = raw[:-5]
+    src = templates_dir() / f"{raw}.yaml"
+    if not src.is_file():
+        print(
+            f"unknown template {raw!r}; try: cloudnet templates list",
+            file=sys.stderr,
+        )
+        return 1
+    fd, tmp_name = tempfile.mkstemp(prefix="cloudnet-template-", suffix=".yaml")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        shutil.copy(src, tmp_path)
+        run_args = argparse.Namespace(
+            file=str(tmp_path),
+            json=getattr(args, "json", False),
+            cleanup=getattr(args, "cleanup", False),
+        )
+        return cmd_run(client, run_args)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def load_topology_yaml(path: Path) -> dict:
@@ -328,6 +385,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_validate_topo.add_argument("file", help="Path to topology YAML")
     p_validate_topo.set_defaults(func=cmd_validate_topology)
+
+    p_templates = sub.add_parser(
+        "templates",
+        help="Built-in scenario templates (copy to temp file, then run)",
+    )
+    tpl_sub = p_templates.add_subparsers(
+        dest="tpl_action",
+        required=True,
+        metavar="ACTION",
+    )
+
+    p_tpl_list = tpl_sub.add_parser(
+        "list",
+        help="List built-in scenario templates",
+    )
+    p_tpl_list.set_defaults(func=cmd_templates_list)
+
+    p_tpl_run = tpl_sub.add_parser(
+        "run",
+        help="Run a built-in template (same as cloudnet run on a temp copy)",
+    )
+    p_tpl_run.add_argument(
+        "template",
+        help="Template name (e.g. backend-failure or backend-failure.yaml)",
+    )
+    p_tpl_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Print raw JSON instead of experiment report",
+    )
+    p_tpl_run.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Request deployment cleanup after the scenario run",
+    )
+    p_tpl_run.set_defaults(func=cmd_templates_run)
 
     return parser
 

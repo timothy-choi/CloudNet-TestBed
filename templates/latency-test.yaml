@@ -1,0 +1,30 @@
+# Built-in template: deploy + validate with latency / availability requirements (mock-friendly thresholds).
+# Prerequisites: API running, e.g. CLOUDNET_PROVIDER=mock make dev
+# CLI: ./scripts/cloudnet templates run latency-test
+
+scenario:
+  name: latency_test
+
+topology:
+  name: latency-test-demo
+  nodes:
+    - name: client-a
+      type: host
+    - name: client-b
+      type: host
+  links:
+    - from: client-a
+      to: client-b
+      subnet: 10.210.1.0/24
+  firewall_rules: []
+
+steps:
+  - deploy: true
+  - validate: all
+
+requirements:
+  availability:
+    min_success_rate: 0.9
+  latency:
+    max_avg_ms: 5000
+    max_p95_ms: 10000
