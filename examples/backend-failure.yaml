@@ -3,7 +3,8 @@
 #   make demo-mock
 #
 # Scenario CLI:
-#   ./scripts/cloudnet run examples/backend-failure.yaml
+#   export PATH="$PWD/scripts:$PATH"
+#   cloudnet run examples/backend-failure.yaml
 
 scenario:
   name: backend_failure_test

@@ -2,7 +2,8 @@
 # Start the mock API first:
 #   CLOUDNET_PROVIDER=mock make dev
 # Run:
-#   ./scripts/cloudnet run examples/simple-connectivity.yaml
+#   export PATH="$PWD/scripts:$PATH"
+#   cloudnet run examples/simple-connectivity.yaml
 
 scenario:
   name: simple_connectivity_test

@@ -1,6 +1,6 @@
 # CloudNet — Reliability Experiment Runner for Cloud Network Topologies
 
-CloudNet is **a reliability experiment runner for cloud network topologies**. It turns a declarative network topology into an experiment: deploy, validate connectivity, inject failure, detect drift, reconcile recovery, and return a clear pass/fail result.
+CloudNet lets you run reliability experiments on cloud infrastructure using simple YAML scenarios. It turns a declarative network topology into an experiment: deploy, validate connectivity, inject failure, detect drift, reconcile recovery, and return a clear pass/fail result.
 
 **Primary providers:** **Mock** for local and CI-safe runs, and **AWS** for real VPC/EC2 experiments when credentials and cost controls are configured.
 
@@ -21,6 +21,12 @@ CloudNet gives you one repeatable workflow to:
 ---
 
 ## Quick Start
+
+Make the CLI runnable from this shell:
+
+```bash
+export PATH="$PWD/scripts:$PATH"
+```
 
 Start the API with the **mock** provider:
 
@@ -44,6 +50,81 @@ If dependencies are not installed yet, run **`make install`** first.
 
 ---
 
+## Scenario YAML
+
+CloudNet scenarios are intentionally small. A failure/recovery experiment reads like this:
+
+```yaml
+scenario:
+  name: backend_failure_test
+steps:
+  - validate
+  - fail:
+      node: backend
+  - reconcile
+```
+
+Full runnable examples include the topology and provider-safe defaults, for example **`examples/backend-failure.yaml`**.
+
+Example output:
+
+```text
+✔ validate PASSED
+✖ fail backend injected
+✔ drift detected
+✔ reconcile repaired
+✔ validate PASSED
+```
+
+---
+
+## Run a real experiment on AWS (optional)
+
+Use the mock workflow first, then switch to AWS when you are ready to create real cloud resources.
+
+Prerequisites:
+
+- AWS CLI configured and authenticated.
+- AWS credentials available to the API process as **`AWS_ACCESS_KEY_ID`** and **`AWS_SECRET_ACCESS_KEY`**.
+- AWS region set.
+- A valid AMI ID for that region.
+- AWS Systems Manager access for connectivity validation; set **`AWS_INSTANCE_PROFILE_NAME`** to an instance profile with **AmazonSSMManagedInstanceCore**.
+
+In one terminal, start the API with AWS selected:
+
+```bash
+export CLOUDNET_PROVIDER=aws
+export AWS_REGION=us-west-2
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+export AWS_DEFAULT_AMI_ID=ami-0123456789abcdef0
+export AWS_DEFAULT_INSTANCE_TYPE=t3.micro
+export AWS_INSTANCE_PROFILE_NAME=your-ssm-instance-profile
+export AWS_MAX_INSTANCES_PER_DEPLOY=3
+export AWS_ALLOW_CREATE_INSTANCES=true
+
+make dev
+```
+
+In another terminal, run the scenario through the CLI:
+
+```bash
+export PATH="$PWD/scripts:$PATH"
+cloudnet run examples/backend-failure.yaml --cleanup
+```
+
+That run deploys EC2 instances, validates connectivity, injects a backend failure, detects drift, reconciles the system, validates recovery, and cleans up deployment resources after the run.
+
+**Cost safety:** this path creates real AWS resources. CloudNet defaults to **`t3.micro`**, does **not** create NAT Gateways, does **not** provision ALBs by default, enforces the configured max node limit, and supports cleanup with:
+
+```bash
+cloudnet run examples/backend-failure.yaml --cleanup
+```
+
+Leave **`AWS_ALLOW_CREATE_INSTANCES=false`** until you intentionally want EC2 creation.
+
+---
+
 ## Why use CloudNet?
 
 - **Test failure recovery** without manually wiring VPCs, subnets, security groups, and instances for every experiment.
@@ -58,16 +139,16 @@ If dependencies are not installed yet, run **`make install`** first.
 Use **`make demo-mock`** for the guided local walkthrough. Use the CLI when you want to run a tracked scenario file:
 
 ```bash
-./scripts/cloudnet run examples/backend-failure.yaml
+cloudnet run examples/backend-failure.yaml
 ```
 
 For a shorter deploy-and-validate example:
 
 ```bash
-./scripts/cloudnet run examples/simple-connectivity.yaml
+cloudnet run examples/simple-connectivity.yaml
 ```
 
-Use **`./scripts/cloudnet`** from the project root, or add `scripts/` to your `PATH` and run **`cloudnet`**. Exit code **0** means the scenario **PASSED**; exit code **1** means **FAILED** or an HTTP error. Use **`./scripts/cloudnet run --json`** for the raw API response.
+Use **`cloudnet`** after adding `scripts/` to your `PATH`, or run **`./scripts/cloudnet`** from the project root. Exit code **0** means the scenario **PASSED**; exit code **1** means **FAILED** or an HTTP error. Use **`cloudnet run --json`** for the raw API response.
 
 Scenario runs persist structured step results and emit **`SCENARIO_RUN`** and related events on the topology timeline.
 
@@ -138,7 +219,8 @@ Validate a file locally (**compile + quotas + overlap checks**; does not call th
 GitHub Actions can gate pull requests on the same failure/recovery scenario you run locally—**no AWS credentials**. Workflow **`.github/workflows/cloudnet-scenario.yml`** installs dependencies, starts the API with **`CLOUDNET_PROVIDER=mock`**, waits until **`GET /health`** succeeds, then runs:
 
 ```bash
-./scripts/cloudnet run examples/backend-failure.yaml
+export PATH="$PWD/scripts:$PATH"
+cloudnet run examples/backend-failure.yaml
 ```
 
 The step fails if the CLI exits non-zero (**scenario `FAILED`**, HTTP error, or API never became ready). The main **`CI`** workflow (**`.github/workflows/ci.yml`**) still runs **`make ci`** (lint + unit tests) and a mock control-plane demo; the **CloudNet scenario** workflow focuses on **`examples/backend-failure.yaml`** as an end-to-end reliability check.
@@ -286,7 +368,7 @@ Successful runs return **`scenario`**, **`status`**, **`topology_id`**, **`durat
 | Command | Purpose |
 |---------|---------|
 | `make demo-mock` | Mock control-plane walkthrough (after `CLOUDNET_PROVIDER=mock make dev`). |
-| `make demo-scenario` | Runs `./scripts/cloudnet run examples/backend-failure.yaml`. |
+| `make demo-scenario` | Runs `cloudnet run examples/backend-failure.yaml` via the repo script. |
 | `make demo-aws-control-plane` | Real AWS resources (costs money); needs `CLOUDNET_PROVIDER=aws`, credentials, `make check-api`. Optional `CLOUDNET_DEMO_CLEANUP=true`. |
 
 ### Interactive access on deployed nodes
@@ -482,7 +564,7 @@ PLAN -> DEPLOY -> VALIDATE(PASS) -> FAILURE -> VALIDATE(FAIL) -> DRIFT -> RECONC
 
 ## Cost safety checklist (AWS)
 
-Use this before enabling real deployments:
+Use this before enabling real deployments. AWS experiments create real EC2 and networking resources, so keep cleanup and limits enabled while testing.
 
 | Practice | Detail |
 |----------|--------|
@@ -491,7 +573,7 @@ Use this before enabling real deployments:
 | No NAT Gateway | CloudNet does not create NAT Gateways. |
 | No ALB by default | CloudNet does not provision Application Load Balancers. |
 | Gate EC2 creation | Instances are refused unless `AWS_ALLOW_CREATE_INSTANCES=true`. |
-| Clean up | After demos: `curl -X DELETE http://127.0.0.1:8010/provider/networks/{vpc_id}` or use `CLOUDNET_DEMO_CLEANUP=true` with `make demo-aws-control-plane`. |
+| Clean up | Prefer `cloudnet run examples/backend-failure.yaml --cleanup`; for manual cleanup use `curl -X DELETE http://127.0.0.1:8010/provider/networks/{vpc_id}` or `CLOUDNET_DEMO_CLEANUP=true make demo-aws-control-plane`. |
 
 ---
 
@@ -501,7 +583,7 @@ Use this before enabling real deployments:
 |---------|----------------|
 | **Backend not ready** (`curl` fails, CLI connection errors) | Start the API (**`make dev`** or **`uvicorn`** from **`backend/`**); wait for **`curl -fsS http://127.0.0.1:8010/health`**. Point the CLI at the right URL: **`export CLOUDNET_API_BASE_URL=http://127.0.0.1:<port>`** if not using the default port **8010**. |
 | **Wrong provider selected** | CI and scenario workflows set **`CLOUDNET_PROVIDER=mock`**. Locally, use **`CLOUDNET_PROVIDER=mock`** for tests without cloud credentials. If **`CLOUDNET_PROVIDER`** is unset, see **Providers** (OpenStack may be selected when **`OPENSTACK_ENABLED=true`**). |
-| **Scenario `FAILED` (expected vs actual)** | Re-run with **`./scripts/cloudnet run <file> --json`** and inspect **`steps`** (`expected`, `actual`, `status`). Optional **`requirements`** blocks add availability/latency/recovery gates—see **Non-functional validation**. Check **`GET /topologies/{id}/events`** for **`SCENARIO_RUN`** and requirement events. |
+| **Scenario `FAILED` (expected vs actual)** | Re-run with **`cloudnet run <file> --json`** and inspect **`steps`** (`expected`, `actual`, `status`). Optional **`requirements`** blocks add availability/latency/recovery gates—see **Non-functional validation**. Check **`GET /topologies/{id}/events`** for **`SCENARIO_RUN`** and requirement events. |
 | **AMI not found** | `AWS_DEFAULT_AMI_ID` exists in `AWS_REGION`; AMIs are regional. |
 | **VPC limit exceeded** | Default VPC quota per region; delete unused VPCs or request a limit increase. |
 | **`iam:PassRole` denied** | IAM user/role needs permission to pass the instance profile role used for SSM. |
@@ -590,9 +672,10 @@ AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
 AWS_DEFAULT_AMI_ID=ami-0123456789abcdef0
 AWS_DEFAULT_INSTANCE_TYPE=t3.micro
+AWS_INSTANCE_PROFILE_NAME=your-ssm-instance-profile
 AWS_KEY_NAME=your-ec2-keypair
 AWS_ALLOW_CREATE_INSTANCES=false
-AWS_MAX_INSTANCES_PER_DEPLOY=2
+AWS_MAX_INSTANCES_PER_DEPLOY=3
 AWS_SSH_ALLOWED_CIDR=203.0.113.10/32
 ```
 
