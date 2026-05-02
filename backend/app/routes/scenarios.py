@@ -17,7 +17,7 @@ from app.services.scenario_service import (
 
 class ScenarioMeta(BaseModel):
     name: str
-    cleanup_on_failure: bool = False
+    cleanup_on_failure: bool = True
 
 
 class ScenarioRunBody(BaseModel):

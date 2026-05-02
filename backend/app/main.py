@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 
 from app.db import create_db_and_tables
-from app.routes import config_validation, openstack, provider, scenarios
+from app.routes import cleanup, config_validation, openstack, provider, scenarios
 from app.routes.topology import router as topology_router
 from app.schemas import DeploymentPlan, TopologyInput
 from app.topology_compiler import compile_topology
@@ -13,6 +13,7 @@ app.include_router(provider.router)
 app.include_router(topology_router)
 app.include_router(scenarios.router)
 app.include_router(config_validation.router)
+app.include_router(cleanup.router)
 
 
 @app.on_event("startup")

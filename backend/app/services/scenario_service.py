@@ -393,7 +393,7 @@ class ScenarioRunner:
         topology_input: TopologyInput,
         raw_steps: list[Any],
         requirements_spec: ScenarioRequirementsSpec | None = None,
-        cleanup_on_failure: bool = False,
+        cleanup_on_failure: bool = True,
         cleanup_after_run: bool = False,
     ) -> dict[str, Any]:
         session = self._session
@@ -819,7 +819,7 @@ def run_scenario(
     topology_input: TopologyInput,
     raw_steps: list[Any],
     requirements: dict[str, Any] | None = None,
-    cleanup_on_failure: bool = False,
+    cleanup_on_failure: bool = True,
     cleanup_after_run: bool = False,
 ) -> dict[str, Any]:
     spec = parse_requirements_dict(requirements)

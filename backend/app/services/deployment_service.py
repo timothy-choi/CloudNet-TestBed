@@ -226,6 +226,12 @@ def deploy_topology(
         topology.status = "FAILED"
         session.add(topology)
         session.commit()
+        partial = list_topology_resources(session, topology.id)
+        if partial:
+            try:
+                cleanup_topology_deployment(session, topology)
+            except Exception:
+                logger.exception("cleanup after failed deploy failed")
         if topology.id is not None:
             try:
                 from app.services.local_state_store import record_deploy_failed
@@ -491,6 +497,24 @@ def _deployment_resource_delete_order(resource: DeploymentResource) -> tuple[int
     return (tier, -rid)
 
 
+def teardown_provider_resources(provider: Any, resources: list[DeploymentResource]) -> None:
+    """Delete resources at the provider only (no DB). Shared by cleanup and janitor."""
+    if not resources:
+        return
+    if provider.name == "aws":
+        vpc_rows = [r for r in resources if r.resource_type == AWS_VPC]
+        if not vpc_rows:
+            raise DeploymentError(
+                "AWS topology has deployment resources but no aws_vpc row; "
+                "manual cleanup may be required"
+            )
+        provider.delete_network(vpc_rows[0].openstack_id)
+        return
+    ordered = sorted(resources, key=_deployment_resource_delete_order)
+    for r in ordered:
+        provider.delete_resource(r.resource_type, r.openstack_id)
+
+
 def cleanup_topology_deployment(session: Session, topology: Topology) -> dict[str, Any]:
     """Remove recorded provider resources for this topology (same operations as manual teardown).
 
@@ -516,23 +540,14 @@ def cleanup_topology_deployment(session: Session, topology: Topology) -> dict[st
     provider = get_provider()
     n = len(resources)
 
-    if provider.name == "aws":
-        vpc_rows = [r for r in resources if r.resource_type == AWS_VPC]
-        if not vpc_rows:
-            raise DeploymentError(
-                "AWS topology has deployment resources but no aws_vpc row; "
-                "manual cleanup may be required"
-            )
-        provider.delete_network(vpc_rows[0].openstack_id)
-        for r in resources:
-            session.delete(r)
-        session.commit()
-    else:
-        ordered = sorted(resources, key=_deployment_resource_delete_order)
-        for r in ordered:
-            provider.delete_resource(r.resource_type, r.openstack_id)
-            session.delete(r)
-        session.commit()
+    try:
+        teardown_provider_resources(provider, resources)
+    except Exception:
+        logger.exception("provider teardown failed during cleanup_topology_deployment")
+
+    for r in resources:
+        session.delete(r)
+    session.commit()
 
     topology.status = "CREATED"
     session.add(topology)

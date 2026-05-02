@@ -72,6 +72,8 @@ def cmd_templates_run(client: httpx.Client, args: argparse.Namespace) -> int:
             file=str(tmp_path),
             json=getattr(args, "json", False),
             cleanup=getattr(args, "cleanup", False),
+            plan_only=False,
+            no_cleanup_on_failure=getattr(args, "no_cleanup_on_failure", False),
         )
         return cmd_run(client, run_args)
     finally:
@@ -95,6 +97,20 @@ def cmd_state_clear(client: httpx.Client, args: argparse.Namespace) -> int:
     from app.services.local_state_store import clear_all_local_state
 
     clear_all_local_state()
+    return 0
+
+
+def cmd_cleanup(client: httpx.Client, args: argparse.Namespace) -> int:
+    """POST /cleanup/janitor — best-effort orphaned resource teardown."""
+    del args  # unused
+    response = client.post("/cleanup/janitor")
+    if response.status_code >= 400:
+        print(
+            f"cleanup janitor failed: {response.status_code} {response.text}",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(response.json(), indent=2))
     return 0
 
 
@@ -325,6 +341,8 @@ def cmd_run(client: httpx.Client, args: argparse.Namespace) -> int:
     body = load_scenario_yaml(path)
     if getattr(args, "cleanup", False):
         body["cleanup"] = True
+    if getattr(args, "no_cleanup_on_failure", False):
+        body.setdefault("scenario", {})["cleanup_on_failure"] = False
     response = client.post("/scenarios/run", json=body)
     if response.status_code >= 400:
         print(
@@ -435,7 +453,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print dry-run plan only (no API calls); same as cloudnet plan",
     )
+    p_run.add_argument(
+        "--no-cleanup-on-failure",
+        action="store_true",
+        help="Disable cleanup after a failed deploy or failed scenario (default is on)",
+    )
     p_run.set_defaults(func=cmd_run)
+
+    p_cleanup = sub.add_parser(
+        "cleanup",
+        help="Run janitor: tear down orphaned provider resources listed in state.json",
+    )
+    p_cleanup.set_defaults(func=cmd_cleanup)
 
     p_plan = sub.add_parser(
         "plan",
@@ -484,6 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--cleanup",
         action="store_true",
         help="Request deployment cleanup after the scenario run",
+    )
+    p_tpl_run.add_argument(
+        "--no-cleanup-on-failure",
+        action="store_true",
+        help="Disable cleanup after a failed deploy or failed scenario (default is on)",
     )
     p_tpl_run.set_defaults(func=cmd_templates_run)
 

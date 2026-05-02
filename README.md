@@ -58,7 +58,7 @@ List available templates:
 ./scripts/cloudnet templates list
 ```
 
-Templates live under **`templates/`**. The CLI copies the chosen file to a temporary path and invokes the same **`POST /scenarios/run`** path as **`cloudnet run`** with a scenario file. Options **`--json`** and **`--cleanup`** match **`cloudnet run`**.
+Templates live under **`templates/`**. The CLI copies the chosen file to a temporary path and invokes the same **`POST /scenarios/run`** path as **`cloudnet run`** with a scenario file. Options **`--json`**, **`--cleanup`**, and **`--no-cleanup-on-failure`** match **`cloudnet run`**.
 
 | Template | Purpose |
 |----------|---------|
@@ -402,11 +402,16 @@ Before a scenario persists topology metadata or reaches deploy, the engine valid
 
 ### Cleanup
 
-- **`scenario.cleanup_on_failure`**: When **true**, CloudNet attempts provider teardown after a **failed deploy step** or after the run finishes with **FAILED** (best-effort; failures are swallowed so the API still returns a report).
-- **`cleanup: true`** (top-level scenario payload, same as **`POST /scenarios/run`** body **`cleanup`**): Request teardown **after** the scenario completes (often paired with **`cleanup_on_failure`** for failure paths).
-- **CLI**: **`./scripts/cloudnet run … --cleanup`** sends the top-level **`cleanup`** flag.
+CloudNet aims for **best-effort** cleanup: failures during teardown are logged but do not hide the original deploy or scenario error. Guarantees:
 
-YAML mirrors the JSON API: optional **`scenario.cleanup_on_failure`** and optional top-level **`cleanup`**.
+- **Partial deploy**: If **`POST /topologies/{id}/deploy`** creates some provider resources and then fails, the engine attempts **full teardown** of whatever was recorded in **`deploymentresource`** for that topology (same path as manual cleanup), then records failure in local state. You should not be left with DB rows pointing at half-created topology unless teardown itself failed at the provider.
+- **`scenario.cleanup_on_failure`** defaults to **true** in the API: after a **failed deploy** or a scenario run that ends **FAILED**, CloudNet attempts the same provider teardown / DB cleanup as **`cleanup_on_failure`** describes (best-effort).
+- **CLI**: **`./scripts/cloudnet run … --no-cleanup-on-failure`** sets **`scenario.cleanup_on_failure`** to **false** for that run (default is cleanup **on**).
+- **`cleanup: true`** (top-level scenario payload): Request teardown **after** the scenario completes (often paired with **`cleanup_on_failure`** for failure paths).
+- **CLI**: **`./scripts/cloudnet run … --cleanup`** sends the top-level **`cleanup`** flag.
+- **Orphaned `state.json`**: If the process crashes after creating cloud resources but **before** SQLite rows exist (or rows were lost), **`./scripts/cloudnet cleanup`** runs the janitor (**`POST /cleanup/janitor`**): it scans **`state.json`** for **ACTIVE** entries whose resource IDs are **not** backed by **`deploymentresource`** rows, tears those provider resources down, and removes the stale state entry.
+
+YAML mirrors the JSON API: optional **`scenario.cleanup_on_failure`** (default **true**) and optional top-level **`cleanup`**.
 
 ### Structured logging
 
@@ -438,6 +443,7 @@ CLI:
 ```bash
 ./scripts/cloudnet state show    # print JSON
 ./scripts/cloudnet state clear    # empty the file (does not delete cloud resources)
+./scripts/cloudnet cleanup       # janitor: reconcile orphaned ACTIVE state vs DB
 ```
 
 Treat **`state.json`** as **operator-local** (add **`state.json`** to **`.gitignore`**); it can contain resource identifiers.
@@ -497,7 +503,7 @@ Three required top-level keys and one optional block:
 
 | Key | Purpose |
 |-----|---------|
-| **`scenario`** | **`name:`** label; optional **`cleanup_on_failure: true`** (tear down resources after a failed deploy or failed run — see **Safety and Production Readiness**) |
+| **`scenario`** | **`name:`** label; optional **`cleanup_on_failure`** (default **`true`** — tear down resources after a failed deploy or failed run; set **`false`** to skip; CLI **`--no-cleanup-on-failure`**) |
 | **`topology`** | Same as standalone topology YAML (`name`, `nodes`, `links`, `firewall_rules`) |
 | **`steps`** | Ordered list; **each item is a single-key mapping** |
 | **`requirements`** *(optional)* | **`availability`**, **`latency`**, **`recovery`** thresholds (see **Non-functional validation**) |
