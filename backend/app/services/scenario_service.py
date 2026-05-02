@@ -466,7 +466,7 @@ class ScenarioRunner:
                 abort_scenario = True
             else:
                 try:
-                    deploy_topology(session, topology)
+                    deploy_topology(session, topology, scenario_run_id=scenario_run_id)
                 except DeploymentAlreadyExistsError as exc:
                     session.delete(run)
                     session.commit()
@@ -514,7 +514,7 @@ class ScenarioRunner:
 
             if isinstance(step, _DeployStep):
                 try:
-                    dep = deploy_topology(session, topology)
+                    dep = deploy_topology(session, topology, scenario_run_id=scenario_run_id)
                     actual = str(dep.get("status", ""))
                     ok = actual == "ACTIVE"
                     msg = None

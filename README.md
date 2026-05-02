@@ -412,6 +412,23 @@ The **`cloudnet.scenario`** logger emits **JSON lines** at INFO for step events 
 
 In addition to scenario quotas, AWS deploy paths honor **`AWS_MAX_INSTANCES_PER_DEPLOY`** and related settings from **`app/core/config.py`**. The cost-risk unit cap ties coarse topology size to configured limits without introducing new AWS services.
 
+### Local state file (`state.json`)
+
+The control plane already stores **deployment resource rows** in SQLite. In addition, each successful or failed deploy updates a **JSON snapshot** on disk so you can see **VPC, subnet, and instance IDs** (and the related **`scenario_run_id`**, when a scenario performed the deploy) after restarting the process or for scripts that do not query the database.
+
+- **Default path:** **`state.json`** at the repository root. Override with **`CLOUDNET_STATE_FILE`** (absolute or relative path).
+- **When it updates:** after **`deploy`** completes or fails; entries are **removed** when **cleanup** runs (or when cleanup finds no DB rows, to clear stale entries).
+- **Reconcile:** if SQLite has no **`deploymentresource`** rows for a topology but **`state.json`** still lists an **ACTIVE** deployment with resource IDs, reconcile uses that snapshot so recover flows do not assume an empty provider graph.
+
+CLI:
+
+```bash
+./scripts/cloudnet state show    # print JSON
+./scripts/cloudnet state clear    # empty the file (does not delete cloud resources)
+```
+
+Treat **`state.json`** as **operator-local** (add **`state.json`** to **`.gitignore`**); it can contain resource identifiers.
+
 ---
 
 ## Architecture

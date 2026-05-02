@@ -18,6 +18,12 @@ app.include_router(config_validation.router)
 @app.on_event("startup")
 def on_startup() -> None:
     create_db_and_tables()
+    try:
+        from app.services.local_state_store import load_local_state_on_startup
+
+        load_local_state_on_startup()
+    except Exception:
+        pass
 
 
 @app.get("/health")

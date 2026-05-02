@@ -78,6 +78,26 @@ def cmd_templates_run(client: httpx.Client, args: argparse.Namespace) -> int:
         tmp_path.unlink(missing_ok=True)
 
 
+def cmd_state_show(client: httpx.Client, args: argparse.Namespace) -> int:
+    """Print persisted deployment snapshot JSON (``state.json``)."""
+    del args  # unused
+    from app.services.local_state_store import get_state_path, load_state
+
+    state = load_state()
+    print(json.dumps(state, indent=2))
+    print(f"# CLOUDNET_STATE_FILE={get_state_path()}", file=sys.stderr)
+    return 0
+
+
+def cmd_state_clear(client: httpx.Client, args: argparse.Namespace) -> int:
+    """Clear local ``state.json`` (does not delete provider resources)."""
+    del args  # unused
+    from app.services.local_state_store import clear_all_local_state
+
+    clear_all_local_state()
+    return 0
+
+
 def load_topology_yaml(path: Path) -> dict:
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict) or "name" not in data:
@@ -421,6 +441,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request deployment cleanup after the scenario run",
     )
     p_tpl_run.set_defaults(func=cmd_templates_run)
+
+    p_state = sub.add_parser(
+        "state",
+        help="Local deployment snapshot file (state.json)",
+    )
+    state_sub = p_state.add_subparsers(
+        dest="state_action",
+        required=True,
+        metavar="ACTION",
+    )
+    p_state_show = state_sub.add_parser(
+        "show",
+        help="Print JSON from CLOUDNET_STATE_FILE (default repo state.json)",
+    )
+    p_state_show.set_defaults(func=cmd_state_show)
+    p_state_clear = state_sub.add_parser(
+        "clear",
+        help="Reset local state file (empty deployments object)",
+    )
+    p_state_clear.set_defaults(func=cmd_state_clear)
 
     return parser
 

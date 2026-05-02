@@ -57,7 +57,12 @@ def test_quota_violation_fails_before_deploy(
 
     deploy_calls: list[int] = []
 
-    def must_not_deploy(session: Session, topology) -> dict:
+    def must_not_deploy(
+        session: Session,
+        topology,
+        *,
+        scenario_run_id: int | None = None,
+    ) -> dict:
         deploy_calls.append(topology.id)
         return {"status": "ACTIVE"}
 
@@ -100,7 +105,12 @@ def test_cleanup_on_failure_invokes_cleanup_after_deploy_error(
 
     cleanup_calls: list[int] = []
 
-    def deploy_boom(session: Session, topology) -> dict:
+    def deploy_boom(
+        session: Session,
+        topology,
+        *,
+        scenario_run_id: int | None = None,
+    ) -> dict:
         raise DeploymentError("forced deploy failure")
 
     def track_cleanup(session: Session, topology) -> dict:

@@ -10,3 +10,4 @@ cloudnet.db
 *.db
 dist/
 build/
+state.json

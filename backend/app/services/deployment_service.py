@@ -115,7 +115,12 @@ def multi_homed_warnings(plan: dict[str, Any]) -> list[str]:
     ]
 
 
-def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
+def deploy_topology(
+    session: Session,
+    topology: Topology,
+    *,
+    scenario_run_id: int | None = None,
+) -> dict[str, Any]:
     if topology.id is None:
         raise DeploymentError("topology must be saved before deployment")
 
@@ -221,6 +226,16 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
         topology.status = "FAILED"
         session.add(topology)
         session.commit()
+        if topology.id is not None:
+            try:
+                from app.services.local_state_store import record_deploy_failed
+
+                record_deploy_failed(
+                    topology_id=topology.id,
+                    scenario_run_id=scenario_run_id,
+                )
+            except Exception:
+                logger.exception("local state snapshot (failed deploy) skipped")
         provider_label = "OpenStack" if provider.name == "openstack" else "Provider"
         raise DeploymentError(f"{provider_label} deployment failed: {exc}") from exc
 
@@ -228,6 +243,19 @@ def deploy_topology(session: Session, topology: Topology) -> dict[str, Any]:
     session.add(topology)
     session.commit()
     session.refresh(topology)
+
+    rows = list_topology_resources(session, topology.id)
+    try:
+        from app.services.local_state_store import record_deploy_snapshot
+
+        record_deploy_snapshot(
+            topology_id=topology.id,
+            scenario_run_id=scenario_run_id,
+            resources=rows,
+            status=str(topology.status),
+        )
+    except Exception:
+        logger.exception("local state snapshot (deploy) skipped")
 
     response = {
         "topology_id": topology.id,
@@ -477,6 +505,12 @@ def cleanup_topology_deployment(session: Session, topology: Topology) -> dict[st
         topology.status = "CREATED"
         session.add(topology)
         session.commit()
+        try:
+            from app.services.local_state_store import remove_local_deployment
+
+            remove_local_deployment(topology.id)
+        except Exception:
+            logger.exception("local state cleanup skipped")
         return {"status": "SKIPPED", "detail": "no deployment resources"}
 
     provider = get_provider()
@@ -504,4 +538,12 @@ def cleanup_topology_deployment(session: Session, topology: Topology) -> dict[st
     session.add(topology)
     session.commit()
     session.refresh(topology)
+
+    try:
+        from app.services.local_state_store import remove_local_deployment
+
+        remove_local_deployment(topology.id)
+    except Exception:
+        logger.exception("local state cleanup skipped")
+
     return {"status": "CLEANED", "resources_removed": n}

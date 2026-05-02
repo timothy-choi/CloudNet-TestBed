@@ -3,9 +3,9 @@ from typing import Any
 from sqlmodel import Session
 
 from app.core.config import get_cloudnet_provider
-from app.models import DeploymentResource, Topology
+from app.models import Topology
 from app.providers.factory import get_provider
-from app.resource_types import instance_types_filter
+from app.resource_types import AWS_SECURITY_GROUP, instance_types_filter
 from app.services.connectivity_service import (
     ConnectivityTestError,
     validate_topology_links,
@@ -16,6 +16,7 @@ from app.services.deployment_service import (
     multi_homed_warnings,
 )
 from app.services.drift_service import detect_topology_drift
+from app.services.local_state_store import resources_from_local_state
 
 
 class ControlPlaneError(Exception):
@@ -71,6 +72,8 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
     actions: list[dict[str, str]] = []
     started_instances: list[str] = []
     resources = list_topology_resources(session, topology.id)
+    if not resources:
+        resources = resources_from_local_state(topology.id)
     drift = detect_topology_drift(session=session, topology=topology, provider=provider)
 
     for resource in _repairable_instance_resources(resources, provider.name):
@@ -138,22 +141,20 @@ def reconcile_topology(session: Session, topology: Topology) -> dict[str, Any]:
 
 
 def _repairable_instance_resources(
-    resources: list[DeploymentResource],
+    resources: list[Any],
     provider_name: str,
-) -> list[DeploymentResource]:
+) -> list[Any]:
     allowed = instance_types_filter(provider_name)
     return [
         resource
         for resource in resources
-        if resource.resource_type in allowed
+        if getattr(resource, "resource_type", None) in allowed
     ]
 
 
-def _aws_security_group_resource(
-    resources: list[DeploymentResource],
-) -> DeploymentResource | None:
+def _aws_security_group_resource(resources: list[Any]) -> Any | None:
     for resource in resources:
-        if resource.resource_type == "aws_security_group":
+        if getattr(resource, "resource_type", None) == AWS_SECURITY_GROUP:
             return resource
     return None
 
