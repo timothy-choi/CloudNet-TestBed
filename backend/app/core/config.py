@@ -29,6 +29,11 @@ def cloudnet_allow_exec() -> bool:
     return _env_bool("CLOUDNET_ALLOW_EXEC", default=False)
 
 
+def cloudnet_simulate_failures() -> bool:
+    """When true, MockProvider may inject latency and synthetic API failures (tests / chaos)."""
+    return _env_bool("CLOUDNET_SIMULATE_FAILURES", default=False)
+
+
 def get_cloudnet_provider() -> str:
     configured_provider = os.getenv("CLOUDNET_PROVIDER")
     if configured_provider:

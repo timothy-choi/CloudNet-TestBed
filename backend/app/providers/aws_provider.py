@@ -5,6 +5,7 @@ from typing import Any, NoReturn
 
 from app.core.config import AWSSettings, get_aws_settings
 from app.providers.base import BaseProvider
+from app.services.provider_retry import call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -631,43 +632,46 @@ class AWSProvider(BaseProvider):
         raise RuntimeError(f"No private IP found for AWS instance {server_id}")
 
     def run_ping(self, source_server_id: str, target_ip: str) -> str:
-        settings = self._validated_settings(require_default_ami=False)
-        ssm = self._client("ssm", settings)
-        command = f"ping -c 3 {target_ip}"
-        try:
-            command_response = ssm.send_command(
-                InstanceIds=[source_server_id],
-                DocumentName="AWS-RunShellScript",
-                Parameters={"commands": [command]},
-            )
-            command_id = command_response["Command"]["CommandId"]
-            invocation = self._poll_ssm_invocation(
-                ssm=ssm,
-                command_id=command_id,
-                instance_id=source_server_id,
-            )
-        except self._client_error_class() as exc:
-            raise RuntimeError(
-                "AWS SSM ping failed. Ensure instances have an IAM role with "
-                "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
-                + self._error_detail(exc)
-            ) from exc
+        def _attempt() -> str:
+            settings = self._validated_settings(require_default_ami=False)
+            ssm = self._client("ssm", settings)
+            command = f"ping -c 3 {target_ip}"
+            try:
+                command_response = ssm.send_command(
+                    InstanceIds=[source_server_id],
+                    DocumentName="AWS-RunShellScript",
+                    Parameters={"commands": [command]},
+                )
+                command_id = command_response["Command"]["CommandId"]
+                invocation = self._poll_ssm_invocation(
+                    ssm=ssm,
+                    command_id=command_id,
+                    instance_id=source_server_id,
+                )
+            except self._client_error_class() as exc:
+                raise RuntimeError(
+                    "AWS SSM ping failed. Ensure instances have an IAM role with "
+                    "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
+                    + self._error_detail(exc)
+                ) from exc
 
-        status = invocation.get("Status")
-        output = "\n".join(
-            part
-            for part in [
-                invocation.get("StandardOutputContent", "").strip(),
-                invocation.get("StandardErrorContent", "").strip(),
-            ]
-            if part
-        )
-        if status != "Success":
-            raise RuntimeError(
-                f"AWS SSM ping failed with status {status}: "
-                + (output or "no command output")
+            status = invocation.get("Status")
+            output = "\n".join(
+                part
+                for part in [
+                    invocation.get("StandardOutputContent", "").strip(),
+                    invocation.get("StandardErrorContent", "").strip(),
+                ]
+                if part
             )
-        return output
+            if status != "Success":
+                raise RuntimeError(
+                    f"AWS SSM ping failed with status {status}: "
+                    + (output or "no command output")
+                )
+            return output
+
+        return call_with_retry(_attempt, "SSM ping")
 
     def get_instance_network_info(self, instance_id: str) -> dict[str, str | None]:
         settings = self._validated_settings(require_default_ami=False)
@@ -692,35 +696,38 @@ class AWSProvider(BaseProvider):
         *,
         timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
-        settings = self._validated_settings(require_default_ami=False)
-        ssm = self._client("ssm", settings)
-        try:
-            command_response = ssm.send_command(
-                InstanceIds=[instance_id],
-                DocumentName="AWS-RunShellScript",
-                Parameters={"commands": [command]},
-            )
-            cmd_id = command_response["Command"]["CommandId"]
-            invocation = self._poll_ssm_invocation(
-                ssm=ssm,
-                command_id=cmd_id,
-                instance_id=instance_id,
-                timeout_seconds=timeout_seconds,
-            )
-        except self._client_error_class() as exc:
-            raise RuntimeError(
-                "AWS SSM command failed. Ensure instances have an IAM role with "
-                "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
-                + self._error_detail(exc)
-            ) from exc
+        def _attempt() -> dict[str, Any]:
+            settings = self._validated_settings(require_default_ami=False)
+            ssm = self._client("ssm", settings)
+            try:
+                command_response = ssm.send_command(
+                    InstanceIds=[instance_id],
+                    DocumentName="AWS-RunShellScript",
+                    Parameters={"commands": [command]},
+                )
+                cmd_id = command_response["Command"]["CommandId"]
+                invocation = self._poll_ssm_invocation(
+                    ssm=ssm,
+                    command_id=cmd_id,
+                    instance_id=instance_id,
+                    timeout_seconds=timeout_seconds,
+                )
+            except self._client_error_class() as exc:
+                raise RuntimeError(
+                    "AWS SSM command failed. Ensure instances have an IAM role with "
+                    "AmazonSSMManagedInstanceCore and an AMI with SSM Agent installed: "
+                    + self._error_detail(exc)
+                ) from exc
 
-        status = invocation.get("Status")
-        ok = status == "Success"
-        return {
-            "status": "SUCCESS" if ok else "FAILED",
-            "stdout": invocation.get("StandardOutputContent", "").strip(),
-            "stderr": invocation.get("StandardErrorContent", "").strip(),
-        }
+            status = invocation.get("Status")
+            ok = status == "Success"
+            return {
+                "status": "SUCCESS" if ok else "FAILED",
+                "stdout": invocation.get("StandardOutputContent", "").strip(),
+                "stderr": invocation.get("StandardErrorContent", "").strip(),
+            }
+
+        return call_with_retry(_attempt, "SSM command")
 
     def _client(self, service_name: str, settings: AWSSettings) -> Any:
         import boto3

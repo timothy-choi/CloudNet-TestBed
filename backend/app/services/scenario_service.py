@@ -595,6 +595,20 @@ class ScenarioRunner:
                     if not ok:
                         overall_ok = False
                     continue
+                except Exception as exc:
+                    push_step(
+                        _step_record(
+                            name="validate",
+                            action="validate",
+                            expected=exp_label,
+                            actual="FAILED",
+                            step_passed=False,
+                            duration_ms=_elapsed_ms(t_step),
+                            message=f"internal error: {exc}",
+                        )
+                    )
+                    overall_ok = False
+                    continue
 
                 metrics = response.get("metrics") or {}
                 agg_tests_total += int(metrics.get("tests_total") or 0)

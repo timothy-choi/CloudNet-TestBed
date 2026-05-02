@@ -18,6 +18,7 @@ from app.resource_types import (
     SUBNET_RESOURCE_TYPES,
     non_aws_deploy_resource_labels,
 )
+from app.services.provider_retry import call_with_retry
 from app.topology_compiler import compile_topology
 
 
@@ -281,9 +282,12 @@ def deploy_topology(
         if not is_aws:
             net_t, subnet_t, srv_t = non_aws_deploy_resource_labels(provider.name)
             for network_plan in plan["networks"]:
-                network = provider.create_network(
-                    name=network_plan["name"],
-                    cidr=network_plan["subnet"],
+                network = call_with_retry(
+                    lambda np=network_plan: provider.create_network(
+                        name=np["name"],
+                        cidr=np["subnet"],
+                    ),
+                    "VPC creation",
                 )
                 network_ids_by_name[network_plan["name"]] = network["id"]
                 network_resource = DeploymentResource(
@@ -299,10 +303,13 @@ def deploy_topology(
                 response_resources.append(deployment_summary_resource(network_resource))
 
                 subnet_name = f"{network_plan['name']}-subnet"
-                subnet = provider.create_subnet(
-                    network_id=network["id"],
-                    name=subnet_name,
-                    cidr=network_plan["subnet"],
+                subnet = call_with_retry(
+                    lambda: provider.create_subnet(
+                        network_id=network["id"],
+                        name=subnet_name,
+                        cidr=network_plan["subnet"],
+                    ),
+                    "subnet creation",
                 )
                 subnet_resource = DeploymentResource(
                     topology_id=topology.id,
@@ -325,9 +332,12 @@ def deploy_topology(
                     networks=plan["networks"],
                     network_ids_by_name=network_ids_by_name,
                 )
-                server = provider.create_server(
-                    name=server_plan["name"],
-                    network_id=server_network_id,
+                server = call_with_retry(
+                    lambda sp=server_plan, nid=server_network_id: provider.create_server(
+                        name=sp["name"],
+                        network_id=nid,
+                    ),
+                    "instance creation",
                 )
                 server_resource = DeploymentResource(
                     topology_id=topology.id,
@@ -346,11 +356,6 @@ def deploy_topology(
         session.add(topology)
         session.commit()
         partial = list_topology_resources(session, topology.id)
-        if partial:
-            try:
-                cleanup_topology_deployment(session, topology)
-            except Exception:
-                logger.exception("cleanup after failed deploy failed")
         if topology.id is not None:
             try:
                 from app.services.local_state_store import record_deploy_failed
@@ -359,9 +364,15 @@ def deploy_topology(
                     topology_id=topology.id,
                     scenario_run_id=scenario_run_id,
                     topology_name=topology.name,
+                    partial_resources=partial or None,
                 )
             except Exception:
                 logger.exception("local state snapshot (failed deploy) skipped")
+        if partial:
+            try:
+                cleanup_topology_deployment(session, topology)
+            except Exception:
+                logger.exception("cleanup after failed deploy failed")
         provider_label = "OpenStack" if provider.name == "openstack" else "Provider"
         raise DeploymentError(f"{provider_label} deployment failed: {exc}") from exc
 
@@ -407,9 +418,12 @@ def _deploy_aws_resources(
         raise RuntimeError("AWS deployment requires at least one link/subnet")
 
     vpc_plan = plan["networks"][0]
-    network = provider.create_network(
-        name=vpc_plan["name"],
-        cidr="10.0.0.0/16",
+    network = call_with_retry(
+        lambda: provider.create_network(
+            name=vpc_plan["name"],
+            cidr="10.0.0.0/16",
+        ),
+        "VPC creation",
     )
     network_resource = DeploymentResource(
         topology_id=topology.id,
@@ -426,10 +440,13 @@ def _deploy_aws_resources(
     first_subnet_by_node: dict[str, str] = {}
     for network_plan in plan["networks"]:
         subnet_name = f"{network_plan['name']}-subnet"
-        subnet = provider.create_subnet(
-            network_id=network["id"],
-            name=subnet_name,
-            cidr=network_plan["subnet"],
+        subnet = call_with_retry(
+            lambda np=network_plan, sn=subnet_name: provider.create_subnet(
+                network_id=network["id"],
+                name=sn,
+                cidr=np["subnet"],
+            ),
+            "subnet creation",
         )
         subnet_resource = DeploymentResource(
             topology_id=topology.id,
@@ -484,10 +501,13 @@ def _deploy_aws_resources(
 
     for node_name in sorted(host_names):
         logger.debug("Creating EC2 instance for node %s", node_name)
-        server = provider.create_server(
-            name=node_name,
-            network_id=network["id"],
-            subnet_id=first_subnet_by_node[node_name],
+        server = call_with_retry(
+            lambda n=node_name, sid=first_subnet_by_node[node_name]: provider.create_server(
+                name=n,
+                network_id=network["id"],
+                subnet_id=sid,
+            ),
+            "instance creation",
         )
         _record_aws_server_resource(
             session=session,

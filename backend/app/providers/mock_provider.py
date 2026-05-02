@@ -1,7 +1,10 @@
 import os
 import random
+import time
+from collections import defaultdict
 from typing import Any
 
+from app.core.config import cloudnet_simulate_failures
 from app.providers.base import BaseProvider
 
 
@@ -10,6 +13,56 @@ class MockProvider(BaseProvider):
 
     def __init__(self) -> None:
         self.server_statuses: dict[str, str] = {}
+        self._fail_streak_remaining: dict[str, int] = defaultdict(int)
+        self._refresh_fail_budgets()
+
+    def _refresh_fail_budgets(self) -> None:
+        for op in (
+            "create_network",
+            "create_subnet",
+            "create_server",
+            "run_ping",
+            "send_ssm_command",
+        ):
+            raw = os.environ.get(f"CLOUDNET_MOCK_{op.upper()}_FAILS", "0")
+            try:
+                self._fail_streak_remaining[op] = int(raw)
+            except ValueError:
+                self._fail_streak_remaining[op] = 0
+
+    def refresh_simulation_env(self) -> None:
+        """Re-read ``CLOUDNET_MOCK_*_FAILS`` (for tests that change env after init)."""
+        self._refresh_fail_budgets()
+
+    def _maybe_simulated_latency(self) -> None:
+        if not cloudnet_simulate_failures():
+            return
+        ms = float(os.environ.get("CLOUDNET_MOCK_LATENCY_MS", "0") or 0)
+        if ms > 0:
+            time.sleep(ms / 1000.0)
+
+    def _maybe_simulated_random_error(self) -> None:
+        if not cloudnet_simulate_failures():
+            return
+        rate = float(os.environ.get("CLOUDNET_MOCK_RANDOM_FAILURE_RATE", "0") or 0)
+        if rate <= 0 or random.random() >= rate:
+            return
+        err = random.choice(
+            [
+                "RateLimitExceeded: (simulated)",
+                "InternalServerError: (simulated)",
+            ]
+        )
+        raise RuntimeError(err)
+
+    def _before_op(self, op: str) -> None:
+        """Streak failures apply always (for tests). Random + latency need simulation flag."""
+        n = self._fail_streak_remaining.get(op, 0)
+        if n > 0:
+            self._fail_streak_remaining[op] = n - 1
+            raise RuntimeError("RateLimitExceeded: (simulated streak)")
+        self._maybe_simulated_latency()
+        self._maybe_simulated_random_error()
 
     def health(self) -> dict[str, Any]:
         return {
@@ -50,6 +103,7 @@ class MockProvider(BaseProvider):
         name: str,
         cidr: str | None = None,
     ) -> dict[str, Any]:
+        self._before_op("create_network")
         return {
             "id": f"mock-net-{name}",
             "name": name,
@@ -63,6 +117,7 @@ class MockProvider(BaseProvider):
         name: str,
         cidr: str,
     ) -> dict[str, Any]:
+        self._before_op("create_subnet")
         return {
             "id": f"mock-subnet-{name}",
             "name": name,
@@ -88,6 +143,7 @@ class MockProvider(BaseProvider):
         network_id: str,
         subnet_id: str | None = None,
     ) -> dict[str, Any]:
+        self._before_op("create_server")
         server_id = f"mock-server-{name}"
         self.server_statuses[server_id] = "running"
         return {
@@ -161,6 +217,7 @@ class MockProvider(BaseProvider):
         return "203.0.113.10"
 
     def run_ping(self, source_server_id: str, target_ip: str) -> str:
+        self._before_op("run_ping")
         source_status = self.get_server_status(source_server_id)
         if source_status != "running":
             raise RuntimeError(
@@ -187,6 +244,7 @@ class MockProvider(BaseProvider):
         timeout_seconds: float = 30.0,
     ) -> dict[str, Any]:
         _ = timeout_seconds
+        self._before_op("send_ssm_command")
         if self.get_server_status(instance_id) != "running":
             return {
                 "status": "FAILED",

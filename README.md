@@ -28,6 +28,7 @@ CloudNet lets you run reliability experiments on cloud infrastructure using simp
 - **Idempotent deploy** — repeated **`POST /topologies/{id}/deploy`**, scenario runs, and **`cloudnet run`** against the same topology do not create a second set of resources: existing deployment rows (and an **`ACTIVE`** `state.json` snapshot for the same topology name) short-circuit before provider creates. On **AWS**, the provider also checks for existing resources tagged **`Project=CloudNet`** and **`Name=<resource name>`** before create. See **Idempotent deploy** below.
 - **Janitor cleanup** — **`POST /cleanup/janitor`** / **`cloudnet cleanup`** removes orphaned ACTIVE entries in **`state.json`** without matching DB rows (crash recovery).
 - **Concurrent validation** — ICMP/link checks run in parallel with caps (**`MAX_PARALLEL_VALIDATIONS`**, **`VALIDATION_TIMEOUT_SECONDS`**); API results stay in topology link order.
+- **Failure handling** — Transient provider errors are retried with bounded backoff; partial failed deploys snapshot **`state.json`** then cleanup runs (see **Failure handling** below).
 
 ---
 
@@ -39,6 +40,17 @@ CloudNet ensures **repeated runs do not create duplicate infrastructure** for th
 - **Local file** — **`state.json`** (see **`CLOUDNET_STATE_FILE`**) stores a snapshot of resource names and provider ids after deploy; it is updated again on idempotent deploy so file metadata stays consistent.
 - **AWS** — Before create, the AWS provider can resolve existing **VPCs, subnets, security groups, and instances** by tags **`Project=CloudNet`** and **`Name=<resource name>`** and reuse them instead of creating new ones.
 - **CLI** — A second **`cloudnet run same-scenario.yaml`** reuses the deployment: the **deploy** step shows **skipped** resources (and **`cloudnet plan`** prints **CREATE** / **SKIP** / optional **DELETE** lines against **`state.json`** for the scenario topology name).
+
+---
+
+## Failure handling
+
+CloudNet treats **transient provider errors** (throttles, brief AWS/API faults) as **retryable** and applies bounded retries with exponential backoff (**1s → 2s → 4s**, up to **`CLOUDNET_PROVIDER_MAX_RETRIES`**, default **3**) on **VPC, subnet, and instance creation** during deploy, and on **AWS SSM** send/command paths used for ping and exec. **Invalid configuration or topology** failures are **non-retryable** and surface immediately (see **`app/services/provider_errors.py`**, `is_retryable`).
+
+- **Server logs** — The logger **`cloudnet.retry`** records **`Retrying (1/3): …`** before each wait and **`✔ … succeeded after retry`** when a later attempt wins (viewable when the API process logs to the console, e.g. **`make dev`**). The **`cloudnet` CLI** does not print these lines unless you tail server logs.
+- **Partial deploy** — On failure, **`state.json`** can record a **`FAILED`** snapshot **including partial `resources`** before provider cleanup runs; deploy cleanup then removes provider objects and SQLite deployment rows to avoid orphans.
+- **Mock chaos** — **`CLOUDNET_SIMULATE_FAILURES=true`** enables optional **latency** (**`CLOUDNET_MOCK_LATENCY_MS`**) and **random** synthetic **`RateLimitExceeded` / `InternalServerError`** (**`CLOUDNET_MOCK_RANDOM_FAILURE_RATE`**). Use **`CLOUDNET_MOCK_<OPERATION>_FAILS`** for deterministic first-N-call failures (e.g. **`CLOUDNET_MOCK_CREATE_NETWORK_FAILS=1`**) without enabling full simulation.
+- **Validation** — **`VALIDATION_TIMEOUT_SECONDS`** caps each parallel ping job; timeouts mark the link **`FAILED`** (see **`tests/test_failure_robustness.py`** and **`tests/test_concurrent_validation.py`**).
 
 ---
 

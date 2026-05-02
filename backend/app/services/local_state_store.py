@@ -133,6 +133,7 @@ def record_deploy_failed(
     topology_id: int,
     scenario_run_id: int | None,
     topology_name: str | None = None,
+    partial_resources: list[DeploymentResource] | None = None,
 ) -> None:
     state = load_state()
     deps: dict[str, Any] = state.setdefault("deployments", {})
@@ -149,13 +150,24 @@ def record_deploy_failed(
             if isinstance(pn, str) and pn:
                 prev_name = pn
     sr = scenario_run_id if scenario_run_id is not None else prev_sr
+    if partial_resources:
+        serial = _rows_to_serializable(partial_resources)
+        grouped = _classify_ids(
+            [
+                {"resource_type": r["resource_type"], "openstack_id": r["openstack_id"]}
+                for r in serial
+            ]
+        )
+    else:
+        serial = []
+        grouped = {"vpc": [], "subnets": [], "instances": []}
     deps[key] = {
         "topology_id": topology_id,
         "topology_name": prev_name or "",
         "scenario_run_id": sr,
         "status": "FAILED",
-        "provider_resource_ids": {"vpc": [], "subnets": [], "instances": []},
-        "resources": [],
+        "provider_resource_ids": grouped,
+        "resources": serial,
         "updated_at": _iso_now(),
     }
     save_state(state)
